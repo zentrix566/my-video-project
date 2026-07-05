@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,44 @@ from pipeline.meme_composer import compose_meme_draft
 ROOT = Path(__file__).resolve().parent
 DEFAULT_LOG_DIR = ROOT / "outputs" / "logs"
 DEFAULT_DRAFT_FOLDER = "D:/Program Files/JianyingPro Drafts"
+
+
+# ---------------------------------------------------------------------
+#  --auto 模式的自动推断
+# ---------------------------------------------------------------------
+
+def _auto_pick_source(pictures_root: Path | None = None) -> Path | None:
+    """在 Pictures 下扫描 YYYY-MM/可用/，返回最新的一个（按 mtime）。
+    如果都没有，退而求其次找根目录下任何含有 001.jpg 之类照片的 可用/ 子目录。
+    """
+    root = pictures_root or (Path.home() / "Pictures")
+    if not root.is_dir():
+        return None
+
+    candidates: list[Path] = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        usable = entry / "可用"
+        if usable.is_dir():
+            # 至少要有一张图才算有效
+            if any(f.is_file() and f.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                   for f in usable.iterdir()):
+                candidates.append(usable)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _auto_pick_bgm() -> Path | None:
+    """在剪映音频缓存里返回最新下载的 mp3。"""
+    local_app = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData/Local")
+    music_dir = Path(local_app) / "JianyingPro" / "User Data" / "Cache" / "music"
+    if not music_dir.is_dir():
+        return None
+    mp3s = sorted(music_dir.glob("*.mp3"),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    return mp3s[0] if mp3s else None
 
 
 def _confirm(prompt: str) -> str:
@@ -150,6 +189,40 @@ def _pick_photos(usable, count: int, sort: str, seed: int | None,
 
 def run(args: argparse.Namespace) -> int:
     logger = PipelineLogger(DEFAULT_LOG_DIR)
+
+    # ---- --auto：自动推断 source / bgm，并默认开启 auto-count + use-ledger ----
+    if args.auto:
+        print("=" * 60)
+        print("  --auto 傻瓜模式，自动推断参数：")
+        if not args.source:
+            picked = _auto_pick_source()
+            if picked is None:
+                raise SystemExit(
+                    "--auto 找不到默认图源。请在 ~/Pictures/<年-月>/ 下先用 "
+                    "curate_photos.py 生成 可用/ 子目录，或手动传 --source。"
+                )
+            args.source = str(picked)
+            print(f"    --source = {picked}")
+        if not args.bgm:
+            picked_bgm = _auto_pick_bgm()
+            if picked_bgm is None:
+                raise SystemExit(
+                    "--auto 找不到默认 BGM。请先在剪映音乐库里下载一首歌，"
+                    "或手动传 --bgm 指向本地 mp3。"
+                )
+            args.bgm = str(picked_bgm)
+            print(f"    --bgm = {picked_bgm}")
+        # 智能默认（用户没显式传时才开）
+        if not args.auto_count and not args.fit_to_bgm and not args.range:
+            args.auto_count = True
+            print(f"    --auto-count = on  (每张 {args.seconds}s 反算张数)")
+        if not args.use_ledger:
+            args.use_ledger = True
+            print(f"    --use-ledger = on")
+        print("=" * 60)
+
+    if not args.source:
+        raise SystemExit("--source 必填（或用 --auto 让工具自动挑一个）")
 
     source = Path(args.source).expanduser().resolve()
 
@@ -335,8 +408,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="从图片目录挑图生成方屏梗图剪映草稿",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--source", type=str, required=True,
-                        help="图源目录（如 C:/Users/EDY/Pictures/2026-06）")
+    parser.add_argument("--source", type=str, required=False, default=None,
+                        help="图源目录（如 C:/Users/EDY/Pictures/2026-06/可用）；"
+                             "开 --auto 时可省略，自动挑 Pictures 里最新 YYYY-MM/可用/")
     parser.add_argument("--count", type=int, default=20,
                         help="要挑的图片张数（默认 20；被 --range 覆盖）")
     parser.add_argument("--range", type=str, default=None,
@@ -399,6 +473,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="只做筛图预览、不写草稿")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="关闭确认卡点，一路跑到底")
+
+    # 傻瓜模式：一键自动推断
+    parser.add_argument("--auto", action="store_true",
+                        help="傻瓜模式：自动挑 Pictures 里最新 YYYY-MM/可用/ 作为 --source、"
+                             "剪映缓存里最新 mp3 作为 --bgm，"
+                             "并默认开启 --auto-count + --use-ledger")
 
     # 使用账本（跨次运行标记哪些图已经用过）
     parser.add_argument("--use-ledger", action="store_true",

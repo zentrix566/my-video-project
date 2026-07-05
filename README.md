@@ -267,6 +267,12 @@ C:/Users/EDY/Pictures/2026-06/
 # 取 001–020 张，contain 模式（图片完整显示，宽高比不匹配时留边）
 .\.venv\Scripts\python make_meme_video.py --source "C:/Users/EDY/Pictures/2026-06/可用" --range 1-20
 
+# 傻瓜模式：什么都不指定，自动挑最新 可用/ + 剪映最新 BGM，开 auto-count + ledger
+.\.venv\Scripts\python make_meme_video.py --auto
+
+# 傻瓜模式 + 只看它会挑什么，不真的写草稿
+.\.venv\Scripts\python make_meme_video.py --auto --scan-only
+
 # 多段拼接
 .\.venv\Scripts\python make_meme_video.py --source "..." --range 1-10,15-25
 
@@ -309,8 +315,17 @@ C:/Users/EDY/Pictures/2026-06/
 | **BGM** | `--bgm <path>` | 直接挂到音频轨；短则循环、长则截断；`--fit-to-bgm` 让视频匹配 BGM 长度 |
 | **auto-count** | `--auto-count` | 以 `--seconds` 为每张目标秒数，自动算需要几张让视频 = BGM 时长（需配 `--bgm`） |
 | **ledger** | `--use-ledger` | 启用「已用清单」（`<source>/.used_photos.json`），只从未用图挑；`--show-ledger` 查看，`--reset-ledger` 清空 |
+| **auto 傻瓜模式** | `--auto` | 自动挑 `~/Pictures/<年月>/可用/` + 剪映最新 mp3 BGM + 默认 `--auto-count --use-ledger`。一条命令零参数出片 |
 
 ### 完整推荐流程
+
+**懒人一键版**（前提是已经跑过一次 `curate_photos.py` 并在剪映里下过一首 BGM）：
+
+```bash
+.\.venv\Scripts\python make_meme_video.py --auto
+```
+
+**分步版**：
 
 ```bash
 # 1) 自动分类 + 重命名（一次性，把长截图/太小图挑走）
@@ -332,6 +347,19 @@ C:/Users/EDY/Pictures/2026-06/
 # 想全部重来
 .\.venv\Scripts\python make_meme_video.py --source "..." --reset-ledger --show-ledger
 ```
+
+---
+
+## 在 ZCode 里对话触发（可选）
+
+项目自带一份 ZCode Skill 于 `~/.zcode/skills/video-maker/SKILL.md`。在 ZCode 会话里说以下任一句，AI 会自动识别并按上面工作流跑：
+
+- "帮我生成一个视频" / "做一版视频" / "剪映草稿"
+- "拼个梗图" / "把 6 月的图做成视频"
+- "介绍南明李定国" / "讲讲苏轼被贬"
+- 显式：`/video-maker`
+
+AI 会**先展示计划**（选中的图源/BGM/张数/费用估算），你回复 `OK` / `跑` / `确认` 就一路跑到底；想改哪项直接说。
 
 ---
 
