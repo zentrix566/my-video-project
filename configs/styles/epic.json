@@ -1,0 +1,34 @@
+{
+  "description": "史诗历史片 —— 1920x1080 横屏、稳重女声、cinema 字幕、混合运镜、国风写实电影质感",
+  "canvas_width": 1920,
+  "canvas_height": 1080,
+  "target_aspect_ratio": "16:9",
+  "scene_count": 8,
+  "image": {
+    "model": "doubao-seedream-5.0-lite",
+    "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "size": "2K",
+    "output_format": "png",
+    "response_format": "url",
+    "watermark": false,
+    "trim_black_borders": true,
+    "prompt_suffix": "，国风写实电影画面，光影考究，宽银幕16:9横屏构图，主体完整，画面铺满边缘，不要黑边、不要letterbox、不要边框、不要文字字幕水印logo"
+  },
+  "tts": {
+    "url": "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional",
+    "resource_id": "seed-tts-2.0",
+    "speaker": "zh_female_vv_uranus_bigtts",
+    "format": "mp3",
+    "sample_rate": 24000
+  },
+  "jianying": {
+    "add_image_movement": true,
+    "add_video_movement": true,
+    "split_subtitles": true,
+    "fade_transition": true,
+    "transition_duration": "0.5s",
+    "camera_preset": "mixed",
+    "subtitle_preset": "cinema",
+    "unique_draft_name": true
+  }
+}

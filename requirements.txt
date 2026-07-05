@@ -1,0 +1,6 @@
+volcengine-python-sdk[ark]>=4.0.0
+httpx>=0.23.0,<1
+pydantic>=1.9.0,<3
+requests>=2.31.0
+Pillow>=10.0.0
+pyJianYingDraft>=0.2.6,<1

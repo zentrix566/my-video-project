@@ -1,0 +1,11 @@
+.venv/
+env/
+__pycache__/
+*.pyc
+.env
+outputs/projects/
+outputs/logs/
+outputs/blur_cache/
+.pytest_cache/
+.DS_Store
+Thumbs.db
