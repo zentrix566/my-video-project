@@ -25,8 +25,9 @@ my-video-project/
 ├── curate_photos.py              # 一键分类：可用 / 不可用 / 动图 + 重命名
 ├── curate_manual.py              # 人肉挑图 GUI（tkinter，键盘操作）
 ├── pipeline/
-│   ├── topic_to_story.py         # Step 0  主题 → 旁白稿           (LLM)
-│   ├── scene_split.py            # Step 1  旁白稿 → 场景数组       (LLM)
+│   ├── topic_to_story.py         # Step 0    主题 → 旁白稿           (LLM)
+│   ├── title_variants.py         # Step 0.5  旁白稿 → B站标题候选     (LLM)
+│   ├── scene_split.py            # Step 1    旁白稿 → 场景数组       (LLM)
 │   ├── image_gen.py              # Step 2  豆包 Seedream 图片生成
 │   ├── tts.py                    # Step 3  字节 Seed-TTS 配音
 │   ├── draft_composer.py         # Step 4  pyJianYingDraft 装配草稿
@@ -117,6 +118,9 @@ copy ..\test-agent-plan\.env .env
 
 # 11) 关掉交互卡点，一路跑到底（脚本化时用）
 .\.venv\Scripts\python make_video.py --topic "南明李定国" -y
+
+# 12) 跳过 B 站标题候选（少花 ~0.04 元；默认是开启的）
+.\.venv\Scripts\python make_video.py --topic "南明李定国" --skip-titles
 ```
 
 ## 交互式确认卡点（默认开启）
@@ -157,22 +161,46 @@ copy ..\test-agent-plan\.env .env
 
 ```
 主题 (--topic)
-    │  Step 0  pipeline.topic_to_story   → generated_story.json
+    │  Step 0    pipeline.topic_to_story   → generated_story.json
     ▼
 旁白稿 (story 800-1500 字, project_name, title, author)
-    │  Step 1  pipeline.scene_split      → generated_scenes.json
+    │  Step 0.5  pipeline.title_variants   → titles.json  （B站标题候选 10 条）
+    │  Step 1    pipeline.scene_split      → generated_scenes.json
     ▼
 场景数组 [{id, narration, image_prompt}, …]
-    │  Step 2  pipeline.image_gen        → outputs/projects/<slug>/<ts>/images/*.png
-    │  Step 3  pipeline.tts              → outputs/projects/<slug>/<ts>/audio/*.mp3
+    │  Step 2    pipeline.image_gen        → outputs/projects/<slug>/<ts>/images/*.png
+    │  Step 3    pipeline.tts              → outputs/projects/<slug>/<ts>/audio/*.mp3
     ▼
 Step 4  pipeline.draft_composer    → D:/Program Files/JianyingPro Drafts/<slug>_<ts>/
                                      直接打开剪映即可看到时间线
 ```
 
 - **Step 0** 是相对参考项目的新增能力：用户不用自己写整段故事，LLM 会写。
+- **Step 0.5** 是给"介绍类"视频专门加的：跑完给出 10 条不同定位的 B 站标题候选（流量向 / 正经历史 / 悬念钩子 / 引经据典 / 系列人设 5 大类），并 ★ 标出推荐；结果落盘为 `titles.json`，流水线开始时打印一次、结束时再打印一次方便复制。不想要就加 `--skip-titles`。
 - 所有中间产物按 `outputs/projects/<slug>/<YYYYMMDD_HHMMSS>/` 目录组织，便于事后重跑。
 - 结构化日志：`outputs/logs/pipeline_<ts>.jsonl`，每步 API 调用一行 JSON。
+
+---
+
+## B 站标题候选（Step 0.5）
+
+介绍类视频最费脑的往往是起标题。Step 0.5 在旁白稿写完后自动跑一次轻量 LLM 调用（约 15 秒 / ~0.04 元），基于同一份稿子产出 **10 条不同定位的候选标题**：
+
+| 类别 | 定位 | 举例 |
+|---|---|---|
+| **traffic 流量向** | 数字/极端词/名场面钩子 | 「44 岁孤守扬州，五封绝笔殉国」 |
+| **historical 正经历史** | 信息量高、克制不夸张 | 「史可法督师江北：南明半壁的最后支点」 |
+| **hook 悬念钩子** | 反问/悬念/未完成句 | 「城破那夜，他为什么端坐堂上等死？」 |
+| **literary 引经据典** | 诗句/文言/文学感 | 「一寸丹心付梅岭·史可法孤忠记」 |
+| **series 系列人设** | 账号 IP 化 | 「【南明孤忠 01】史可法·扬州不肯降的书生」 |
+
+每条附一句 15-30 字的推荐理由，最后 ★ 标出 LLM 认为最优的一条。
+
+**产物**：`outputs/projects/<slug>/<ts>/titles.json`，结构 `{primary_title, variants:[{category,title,reason},...], recommended_index, recommend_reason}`；可直接读进任何投稿脚本里挑一条填 B 站/抖音/YouTube 投稿页 title 框。
+
+**关闭**：`--skip-titles`（省 ~0.04 元 / ~15 秒 LLM 调用）。
+
+**复用**：`--resume-latest --skip-llm` 会直接读盘上的 `titles.json`，不会重跑；想强制重新生成就删掉 `titles.json` 后再跑同样命令。
 
 ---
 

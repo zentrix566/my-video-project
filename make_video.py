@@ -29,6 +29,9 @@ from pipeline.helpers import (
 )
 from pipeline.styles import list_style_names, load_style
 from pipeline.topic_to_story import generate_story_from_topic
+from pipeline.title_variants import (
+    format_title_variants_block, generate_title_variants,
+)
 from pipeline.scene_split import split_story_to_scenes
 from pipeline.image_gen import generate_images
 from pipeline.tts import synthesize_audio
@@ -107,18 +110,26 @@ def _preview_scenes(scenes: list[dict[str, str]]) -> None:
 # ============================================================
 
 class CostEstimator:
-    """Step 0 主题→稿 + Step 1 场景切分 + 图片 + TTS。"""
+    """Step 0 主题→稿 + Step 0.5 标题候选 + Step 1 场景切分 + 图片 + TTS。"""
 
     _SEEDREAM_PER_IMAGE_2K = 0.15    # 元/张
     _TTS_PER_CHAR = 0.0001            # 元/字符
     _LLM_PER_KTOKEN = 0.008           # 元/千 token
 
     def estimate(self, *, topic: str, brief: str, scene_count: int,
-                 estimated_story_len: int = 1000) -> str:
+                 estimated_story_len: int = 1000,
+                 include_titles: bool = True) -> str:
         # Step 0: 主题→稿
         step0_in = 400 + len(topic) * 3 + len(brief) * 3
         step0_out = estimated_story_len * 2
         step0_cost = (step0_in + step0_out) / 1000 * self._LLM_PER_KTOKEN
+
+        # Step 0.5: 标题候选（可选）
+        # 输入 ≈ system prompt + 完整 story；输出 ≈ 10 条标题 + reason，约 1200 tok
+        step05_in = 800 + estimated_story_len * 3
+        step05_out = 1200
+        step05_cost = (step05_in + step05_out) / 1000 * self._LLM_PER_KTOKEN \
+            if include_titles else 0.0
 
         # Step 1: 场景切分
         step1_in = 600 + estimated_story_len * 3
@@ -132,20 +143,26 @@ class CostEstimator:
         tts_chars = estimated_story_len
         tts_cost = tts_chars * self._TTS_PER_CHAR
 
-        total = step0_cost + step1_cost + image_cost + tts_cost
+        total = step0_cost + step05_cost + step1_cost + image_cost + tts_cost
 
         lines = [
             "========== 费用预估 (粗略) ==========",
-            f"  Step 0  主题→旁白稿    输入 ~{step0_in} tok / 输出 ~{step0_out} tok   →  约 {step0_cost:.4f} 元",
-            f"  Step 1  场景切分        输入 ~{step1_in} tok / 输出 ~{step1_out} tok   →  约 {step1_cost:.4f} 元",
-            f"  Step 2  图片生成        {scene_count} 张 (Seedream 2K)             →  约 {image_cost:.4f} 元",
-            f"  Step 3  TTS 旁白        {tts_chars} 字 (Seed-TTS 2.0)              →  约 {tts_cost:.4f} 元",
-            f"  Step 4  剪映合成        本地 pyJianYingDraft                       →  0 元",
+            f"  Step 0    主题→旁白稿    输入 ~{step0_in} tok / 输出 ~{step0_out} tok   →  约 {step0_cost:.4f} 元",
+        ]
+        if include_titles:
+            lines.append(
+                f"  Step 0.5  B 站标题候选  输入 ~{step05_in} tok / 输出 ~{step05_out} tok   →  约 {step05_cost:.4f} 元"
+            )
+        lines.extend([
+            f"  Step 1    场景切分        输入 ~{step1_in} tok / 输出 ~{step1_out} tok   →  约 {step1_cost:.4f} 元",
+            f"  Step 2    图片生成        {scene_count} 张 (Seedream 2K)             →  约 {image_cost:.4f} 元",
+            f"  Step 3    TTS 旁白        {tts_chars} 字 (Seed-TTS 2.0)              →  约 {tts_cost:.4f} 元",
+            f"  Step 4    剪映合成        本地 pyJianYingDraft                       →  0 元",
             "  ---------------------------",
             f"  合计:  约 {total:.4f} 元 （旁白长度按 {estimated_story_len} 字估算）",
             "  提示: 实际费用以火山引擎/字节账单为准",
             "=========================================",
-        ]
+        ])
         return "\n".join(lines)
 
 
@@ -236,6 +253,7 @@ def run(args: argparse.Namespace) -> int:
     print(CostEstimator().estimate(
         topic=args.topic, brief=args.brief or "", scene_count=scene_count,
         estimated_story_len=1000,
+        include_titles=not args.skip_titles,
     ))
     if args.dry_run:
         print("\n--dry-run 模式，未进行任何 API 调用。若费用可接受，去掉 --dry-run 正式运行。")
@@ -322,6 +340,27 @@ def run(args: argparse.Namespace) -> int:
                 story = story_data["story"]
                 logger.info("pipeline.edited", stage="after_story", story_len=len(story))
                 print(f"  已重新加载 {story_json.name}（{len(story)} 字），继续 Step 1。")
+
+        # ---- Step 0.5: B 站标题候选 ----
+        # 独立于草稿命名（草稿仍用 story_data['title']），只是给用户挑标题用
+        titles_path = output_dir / "titles.json"
+        titles_data: dict | None = None
+        if args.skip_titles:
+            logger.info("skip.title_variants", reason="--skip-titles")
+        elif args.skip_llm and titles_path.exists():
+            titles_data = json.loads(titles_path.read_text(encoding="utf-8"))
+            logger.info("skip.title_variants.reuse", path=str(titles_path),
+                        count=len(titles_data.get("variants", [])))
+        else:
+            titles_data = generate_title_variants(
+                api_key, args.topic, story_data, output_dir, logger,
+                brief=args.brief or "",
+            )
+            logger.info("step:title_variants.count",
+                        count=len(titles_data.get("variants", [])))
+        if titles_data:
+            print(f"\n  [Step 0.5] B 站标题候选 {len(titles_data.get('variants', []))} 条已就绪 → {titles_path.name}")
+            print(format_title_variants_block(titles_data))
 
         # ---- Step 1: 场景切分 ----
         scenes_path = output_dir / "generated_scenes.json"
@@ -439,6 +478,16 @@ def run(args: argparse.Namespace) -> int:
     print(f"  输出:    {output_dir}")
     print(f"  日志:    {logger.log_path}")
     print("=" * 60)
+
+    # 收尾再打一次标题候选（用户滚到底部就能直接复制走）
+    titles_path = output_dir / "titles.json"
+    if titles_path.exists():
+        try:
+            titles_data = json.loads(titles_path.read_text(encoding="utf-8"))
+            print("\n" + format_title_variants_block(titles_data))
+            print(f"  已落盘:  {titles_path}")
+        except Exception as exc:
+            logger.warn("titles.render_summary_failed", error=str(exc))
     return 0
 
 
@@ -473,6 +522,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-image", action="store_true", help="跳过图片生成")
     parser.add_argument("--skip-tts", action="store_true", help="跳过 TTS")
     parser.add_argument("--skip-jianying", action="store_true", help="跳过剪映草稿合成")
+    parser.add_argument("--skip-titles", action="store_true",
+                        help="跳过 B 站标题候选生成（Step 0.5）；--skip-llm 且存在 titles.json 时会自动复用而非重跑")
     parser.add_argument("--audio-only", action="store_true",
                         help="便捷开关：只跑到 Step 3（生成 mp3 配音），跳过图片与剪映草稿")
     parser.add_argument("--images-only", action="store_true",
