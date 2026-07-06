@@ -569,3 +569,89 @@ class PipelineLogger:
     @property
     def log_path(self) -> Path:
         return self._log_path
+
+
+# ============================================================
+#  视觉大模型调用（make_doc_video.py 用）
+# ============================================================
+
+def vision_chat(
+    images: list[Path],
+    prompt: str,
+    *,
+    api_key: str,
+    logger: "PipelineLogger | None" = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    temperature: float = 0.4,
+    timeout: int = 300,
+) -> str:
+    """把若干张本地图片 + 一段文字 prompt 发给豆包视觉模型，返回文本回复。
+
+    走 OpenAI 兼容多模态协议：content 是一个 list，包含 1 个 text part + N 个 image_url part，
+    图片用 base64 data URL 直接内联，不依赖任何外部图床。
+
+    模型 ID 从 VISION_MODEL 环境变量读，缺省 doubao-seed-1.6-flash；base_url / api_key 与文本 LLM 共用。
+    需账户已开通对应视觉模型，否则 Ark 会明确返回未开通错误。
+    """
+    import base64
+    import requests
+
+    resolved_base_url = (
+        base_url or os.environ.get("PROMPT_BASE_URL")
+        or "https://ark.cn-beijing.volces.com/api/plan/v3"
+    ).rstrip("/")
+    resolved_model = model or os.environ.get("VISION_MODEL", "doubao-seed-1.6-flash")
+
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for p in images:
+        path = Path(p)
+        suffix = path.suffix.lower()
+        mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else (
+            "image/png" if suffix == ".png" else "image/jpeg"
+        )
+        b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
+        })
+
+    def _on_retry(exc, attempt, delay):
+        if logger:
+            logger.warn(
+                "vision_chat.retry",
+                attempt=attempt,
+                delay=round(delay, 1),
+                error=str(exc)[:180],
+            )
+
+    @retry(max_attempts=3, base_delay=2.0, on_retry=_on_retry)
+    def _call() -> dict[str, Any]:
+        resp = requests.post(
+            f"{resolved_base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": resolved_model,
+                "messages": [{"role": "user", "content": content}],
+                "temperature": temperature,
+            },
+            timeout=timeout,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"vision_chat HTTP {resp.status_code}: {resp.text[:400]}"
+            )
+        return resp.json()
+
+    if logger:
+        logger.info(
+            "vision_chat.request",
+            model=resolved_model,
+            image_count=len(images),
+            prompt_chars=len(prompt),
+        )
+    data = _call()
+    return data["choices"][0]["message"]["content"]

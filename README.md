@@ -2,15 +2,16 @@
 
 一个人也能又快又好地做短视频。给一个题材，它把 **文案/画面/配音/字幕/装配** 全跑完，产物直接落进本机剪映草稿目录，打开剪映编辑或导出即可。
 
-**支持三条流水线（三选一，各自独立入口）**：
+**支持四条流水线（四选一，各自独立入口）**：
 
 | 场景 | 输入 | 命令 | 单次成本 |
 |---|---|---|---|
 | 🎬 **主题 → 历史/人物介绍片** | 一个主题短语 | `make_video.py --topic "xxx"` | ~1-2 元 |
 | 🖼 **本地图片 → 梗图/图集片** | 一个图片文件夹 | `make_meme_video.py --source "xxx"` | 0 元 |
 | 💻 **前端项目 → 代码走读片** | 一个 Vue/React 项目路径 | `make_code_walk.py --project "xxx"` | ~0.2 元 |
+| 📄 **PDF+视频 → 需求讲解片** | 一个 PDF + 一个 mp4 | `make_doc_video.py --pdf ... --mp4 ...` | ~0.05-0.35 元 |
 
-三种模式共用同一套 **Seed-TTS 配音 + pyJianYingDraft 剪映装配** 底座，产出的草稿在剪映专业版里打开就能进时间线编辑。
+四种模式共用同一套 **Seed-TTS 配音 + pyJianYingDraft 剪映装配** 底座，产出的草稿在剪映专业版里打开就能进时间线编辑。
 
 ---
 
@@ -39,6 +40,20 @@
 
 详细命令与参数见文末「代码走读模式」章节。
 
+### 📄 PDF + 视频 → 需求讲解片 (`make_doc_video.py`)
+
+**给同事/客户讲清楚一份需求文档 + 一段操作录屏**。给一个 PDF（业务背景）+ 一个本地 mp4（要讲解的屏幕录制），流水线会：
+
+1. **解**：pdfplumber 抽 PDF 全文本 + ffmpeg 均匀抽 8 张关键帧
+2. **看**：豆包视觉大模型逐帧描述屏幕上在做什么（**需要标准 Ark 密钥；仅 agent-plan 密钥请用 `--no-vision` 兜底**）
+3. **写**：LLM 结合 PDF 业务上下文 + 逐帧描述 + 视频时长，写 4-10 段讲解稿并给出每段对应的视频切段时间戳
+4. **切**：ffmpeg 按时间戳切原 mp4 为 N 段短片（`-an` 剥离原音频，避免和 AI 讲解撞车）
+5. **配 + 剪**：Seed-TTS 配音 + 剪映装配（原视频段 + AI 配音 + 字幕）
+
+原视频节奏保留，讲解均匀铺在时间轴上。视频段比 TTS 稍长时自动裁剪（`crop_video=True`），保证音画对齐。适合 RPA 演示回讲、产品需求评审、面向客户的功能讲解片。
+
+详细命令与参数见文末「文档讲解模式」章节。
+
 ---
 
 ## 一句话使用（默认走主题模式）
@@ -58,6 +73,7 @@ my-video-project/
 ├── make_video.py                 # 主入口 CLI（主题 → 视频）
 ├── make_meme_video.py            # 附入口 CLI（本地图 → 梗图剪映草稿）
 ├── make_code_walk.py             # 附入口 CLI（前端项目 → 代码走读视频）
+├── make_doc_video.py             # 附入口 CLI（PDF + mp4 → 需求讲解视频）
 ├── curate_photos.py              # 一键分类：可用 / 不可用 / 动图 + 重命名
 ├── curate_manual.py              # 人肉挑图 GUI（tkinter，键盘操作）
 ├── pipeline/
@@ -70,6 +86,10 @@ my-video-project/
 │   ├── project_scan.py           # 代码走读 Step 0：扫描 Vue/React 前端项目元信息
 │   ├── walk_narrator.py          # 代码走读 Step 1：LLM 生成讲解稿 + 分镜规范
 │   ├── shot_renderer.py          # 代码走读 Step 2：Playwright 抓 UI + Pygments 渲染代码
+│   ├── doc_parse.py              # 文档讲解 Step 0：PDF 抽文本 + ffmpeg 抽帧
+│   ├── video_understand.py       # 文档讲解 Step 1：视觉大模型逐帧描述
+│   ├── doc_narrator.py           # 文档讲解 Step 2：PDF + 帧 → 讲稿 + 切段时间戳
+│   ├── video_cut.py              # 文档讲解 Step 3：ffmpeg 按时间戳切段
 │   ├── meme_composer.py          # 梗图专用装配（无音频轨、模糊背景）
 │   ├── photo_filter.py           # 图片筛选（尺寸/宽高比阈值）
 │   ├── photo_ledger.py           # 已用清单账本（跨次运行不重复挑）
@@ -89,6 +109,7 @@ my-video-project/
 │   ├── logs/*.jsonl              # 结构化流水线日志
 │   ├── projects/<slug>/<ts>/     # 主流水线中间产物
 │   ├── code_walks/<slug>/<ts>/   # 代码走读流水线中间产物
+│   ├── doc_videos/<slug>/<ts>/   # 文档讲解流水线中间产物（PDF+mp4）
 │   └── blur_cache/               # 模糊背景 PIL 缓存（自动重建）
 └── examples/
     ├── run_li_dingguo.sh         # 主流水线样例
@@ -575,6 +596,136 @@ A：这是特性不是 bug —— 交互 Demo 类项目本来就要展示"活的
 
 **Q：项目不是 Vue？**
 A：`project_scan.py` 已支持识别 Vue2/Vue3/React/Next.js/Nuxt/Svelte 六种框架，都从 `package.json` 的依赖里推断，dev 端口从对应的 `*.config.js` 里抠或用框架默认值。逻辑通用，理论上任何 `npm run dev` 起得来的 SPA 都能跑。
+
+---
+
+## 文档讲解模式 —— PDF + mp4 → 剪映草稿
+
+主流水线画面是 AI 生的；代码走读画面是前端项目跑起来的；这个入口的画面就是**你自己的一段操作演示 mp4 + 一份说明业务背景的 PDF**。适合给同事/客户讲清楚一份需求文档：屏幕上的每一步在做什么、对应文档里的哪一条规则。
+
+**跟其它三条流水线的关键区别**：Step 0-3 全新（PDF 抽文本、抽帧、视觉理解、切段），Step 4-5 复用（TTS + 剪映合成）。
+
+### 一键出片
+
+以讲解 `Desktop\man\` 里那份"一般纳税人增值税核对并申报"需求文档 + 对应操作录屏为例：
+
+```bash
+.\.venv\Scripts\python make_doc_video.py `
+    --pdf "C:/Users/19872/Desktop/man/一般纳税人增值税核对并申报_需求文档.pdf" `
+    --mp4 "C:/Users/19872/Desktop/man/71602025511edf1de5278806c46d7f00.mp4" `
+    --draft-folder "D:/software/JianyingPro Drafts" `
+    --yes
+```
+
+约 60 秒后剪映草稿目录会出现 `<PDF 标题>_<时间戳>/`，打开剪映即可。费用约 **0.05-0.35 元**（视觉大模型这一步花费最大）。
+
+### 常用命令
+
+```bash
+# 1) 先估费（会真跑一次 PDF 抽文本获取准确字符数，本地零成本）
+.\.venv\Scripts\python make_doc_video.py `
+    --pdf "path/to/需求.pdf" --mp4 "path/to/演示.mp4" --dry-run
+
+# 2) 加要点、指定场景数
+.\.venv\Scripts\python make_doc_video.py `
+    --pdf ... --mp4 ... `
+    --brief "重点讲差异核对与三方协议缴款" --scenes 8
+
+# 3) 断点续跑：只重跑剪映合成
+.\.venv\Scripts\python make_doc_video.py `
+    --pdf ... --mp4 ... `
+    --resume-latest --skip-parse --skip-vision --skip-llm --skip-cut --skip-tts
+
+# 4) 讲稿改完后从切段续跑
+.\.venv\Scripts\python make_doc_video.py `
+    --pdf ... --mp4 ... `
+    --resume-latest --skip-parse --skip-vision --skip-llm
+
+# 5) 换 TTS 音色 / 覆盖剪映目录
+.\.venv\Scripts\python make_doc_video.py `
+    --pdf ... --mp4 ... `
+    --speaker zh_male_yangguang_emo_v2_mars_bigtts `
+    --draft-folder "D:/software/JianyingPro Drafts"
+
+# 6) 关闭卡点一路跑到底
+.\.venv\Scripts\python make_doc_video.py --pdf ... --mp4 ... -y
+```
+
+### 视觉大模型未开通时的两种兜底
+
+Step 1 默认要调豆包视觉大模型（默认 `doubao-seed-1.6-flash`，可在 `.env` 里改 `VISION_MODEL=xxx`）。**火山方舟"智能体应用方案"套餐目前不支持任何视觉模型**——如果你的 key 只在 agent-plan 上跑（错误 `UnsupportedModel`），有两条降级路：
+
+**A. `--no-vision` 盲讲兜底**（一键完成，画面细节精准度降低）：
+
+```bash
+.\.venv\Scripts\python make_doc_video.py --pdf ... --mp4 ... --no-vision -y
+```
+
+Step 1 跳过视觉大模型；doc_narrator 只按 PDF 全文 + 视频总时长写讲稿。**实测在 PDF 内容详实的场景下（例如影刀 RPA 需求文档）质量仍然很高**——LLM 能从 PDF 里推断视频演示的流程；只是不会精确到"这一帧点了哪个按钮"。
+
+**B. `--manual-captions` 手填 caption 兜底**（精准度最高，需要你花 3-5 分钟看 8 张图）：
+
+```bash
+# 第一步：跑到 Step 1 停，生成 frame_captions.json 骨架
+.\.venv\Scripts\python make_doc_video.py --pdf ... --mp4 ... --manual-captions -y
+
+# 打开 outputs/doc_videos/<slug>/<ts>/frame_captions.json，对照
+# outputs/doc_videos/<slug>/<ts>/frames/*.jpg，把每帧 caption 填上（20-50 字）
+# video_summary 也填一句
+
+# 第二步：--skip-vision 续跑（直接读你手填的文件）
+.\.venv\Scripts\python make_doc_video.py --pdf ... --mp4 ... `
+    --resume-latest --skip-parse --skip-vision -y
+```
+
+想真正跑视觉大模型的话，去火山方舟控制台开一个**标准 Ark 密钥**（不是"智能体应用方案"套餐），并在 `.env` 里把 `PROMPT_BASE_URL` 改到 `https://ark.cn-beijing.volces.com/api/v3`（去掉 `plan/`），然后开通任一 doubao vision 模型即可。
+
+### 六步流水线
+
+```
+--pdf <PDF>  --mp4 <MP4>
+    │  Step 0  pipeline.doc_parse         → doc_content.json + frames/*.jpg
+    ▼                                       （pdfplumber 抽全文 + ffmpeg 均匀抽 8 帧 720p JPEG）
+文档全文 + 视频元信息 + N 张关键帧
+    │  Step 1  pipeline.video_understand  → frame_captions.json    (视觉 LLM)
+    ▼                                       （单次调用传所有帧 + PDF 摘要，输出结构化 JSON）
+每帧 caption + video_summary
+    │  Step 2  pipeline.doc_narrator      → generated_scenes.json  (文本 LLM)
+    ▼                                       （scenes[]: id / narration / video_start_s / video_end_s）
+    │  Step 3  pipeline.video_cut         → clips/*.mp4
+    │                                       （ffmpeg 按时间戳切段，-an 剥音、末尾 +0.3s 兜底）
+    │  Step 4  pipeline.tts               → audio/*.mp3            (复用主流水线 Seed-TTS)
+    ▼
+Step 5  pipeline.draft_composer   → <draft_folder>/<视频标题>_<时间戳>/
+                                    （crop_video=True：视频比 TTS 长时裁剪到 TTS 长度）
+```
+
+### 交互式确认卡点
+
+跟主流水线一致，两处停下让你确认（`--yes`/`-y` 关闭）：
+
+- **卡点 1（Step 0 之后）**：打印 PDF 页数/字符数/首段摘录、视频时长/分辨率/抽帧时间点
+- **卡点 2（Step 2 之后，切段之前）**：打印所有 scenes 的 id / 时间段 / narration 全文；选 `e` 手改 `generated_scenes.json`（换讲稿、调时间段），保存后回车续跑
+
+### 常见问题
+
+**Q：PDF 抽出来字很少？**
+A：可能是扫描版 PDF（没有文本层）。当前流水线不做 OCR，建议先用 Acrobat 或 `ocrmypdf` 转成含文本层的 PDF。
+
+**Q：mp4 里带原始配音，会跟 AI 讲解撞车吗？**
+A：不会。`video_cut.py` 在切段时用 `-an` 剥掉了原音频，只保留画面。
+
+**Q：LLM 分段不合理，某一段特别长？**
+A：卡点 2 选 `e`，直接改 `generated_scenes.json` 里的 `video_start_s` / `video_end_s`（相邻段紧接就行），保存后回车即可从 Step 3 续跑。
+
+**Q：TTS 时长比视频段长了几百毫秒，剪映里最后一秒变卡？**
+A：video_cut 已在每段末尾多切 0.3s 兜底。若还不够，可以让 doc_narrator 写短一点：加 `--brief "每段 narration 严格 25-30 字"`。
+
+**Q：只想看 8 张抽帧图长啥样，不想跑后续？**
+A：`--skip-vision --skip-llm --skip-cut --skip-tts --skip-jianying`（或直接 Ctrl+C 中断），帧会落在 `outputs/doc_videos/<slug>/<时间戳>/frames/`。
+
+**Q：我账户只有 agent-plan 套餐，视觉这一步跑不通怎么办？**
+A：见上文「视觉大模型未开通时的两种兜底」——`--no-vision` 一键完成 or `--manual-captions` 手填 caption 后续跑。
 
 ---
 

@@ -5,6 +5,7 @@ __pycache__/
 .env
 outputs/projects/
 outputs/code_walks/
+outputs/doc_videos/
 outputs/logs/
 outputs/blur_cache/
 .pytest_cache/
