@@ -202,6 +202,7 @@ class JianyingDraftBuilder:
         fade_transition: bool = True,
         mute_original_video: bool = False,
         crop_video: bool = False,
+        preserve_video_duration: bool = False,
         background_image: str | None = None,
         background_music: str | None = None,
         camera_effects: list | None = None,
@@ -219,6 +220,7 @@ class JianyingDraftBuilder:
         self.fade_transition = fade_transition
         self.mute_original_video = mute_original_video
         self.crop_video = crop_video
+        self.preserve_video_duration = preserve_video_duration
         self.background_image = background_image
         self.background_music = background_music
         self.camera_effects = camera_effects if camera_effects is not None else CameraEffect.ALL
@@ -360,31 +362,50 @@ class JianyingDraftBuilder:
 
             audio_material = draft.AudioMaterial(seg.audio_path)
             audio_duration = audio_material.duration
-            time_range = trange(current_time, audio_duration)
 
-            # 音频
-            script.add_segment(draft.AudioSegment(seg.audio_path, time_range), "音频轨道")
-
-            # 媒体
+            # ---- 决定这一段在时间线上的总长 ----
+            # preserve_video_duration 模式：视频段用它的原始时长；音频从段起点开始播、讲完静音。
+            # 目的是不裁剪原 mp4（想让"演示视频完整保留"的场景）。
             is_img = is_image_file(seg.media_path)
-            if is_img:
-                media_seg = draft.VideoSegment(seg.media_path, time_range)
-                add_movement = self.add_image_movement
-            else:
+            if self.preserve_video_duration and not is_img:
                 vm = draft.VideoMaterial(seg.media_path)
-                video_duration = vm.duration
-                if self.crop_video and audio_duration < video_duration:
-                    kwargs = {"source_timerange": trange(0, audio_duration)}
-                    if self.mute_original_video:
-                        kwargs["volume"] = 0.0
-                    media_seg = draft.VideoSegment(seg.media_path, time_range, **kwargs)
-                else:
-                    speed = video_duration / audio_duration
-                    kwargs = {"speed": speed}
-                    if self.mute_original_video:
-                        kwargs["volume"] = 0.0
-                    media_seg = draft.VideoSegment(seg.media_path, time_range, **kwargs)
+                scene_duration = vm.duration
+                audio_time_range = trange(current_time, audio_duration)
+                video_time_range = trange(current_time, scene_duration)
+                # 视频原速原时长，不动 speed/crop
+                media_seg = draft.VideoSegment(
+                    seg.media_path, video_time_range,
+                    **({"volume": 0.0} if self.mute_original_video else {}),
+                )
+                # 音频照旧只占 audio_duration
+                script.add_segment(draft.AudioSegment(seg.audio_path, audio_time_range), "音频轨道")
                 add_movement = self.add_video_movement
+                time_range = video_time_range  # 供下游字幕/位移/转场计算使用
+            else:
+                time_range = trange(current_time, audio_duration)
+                scene_duration = audio_duration
+                # 音频
+                script.add_segment(draft.AudioSegment(seg.audio_path, time_range), "音频轨道")
+
+                # 媒体
+                if is_img:
+                    media_seg = draft.VideoSegment(seg.media_path, time_range)
+                    add_movement = self.add_image_movement
+                else:
+                    vm = draft.VideoMaterial(seg.media_path)
+                    video_duration = vm.duration
+                    if self.crop_video and audio_duration < video_duration:
+                        kwargs = {"source_timerange": trange(0, audio_duration)}
+                        if self.mute_original_video:
+                            kwargs["volume"] = 0.0
+                        media_seg = draft.VideoSegment(seg.media_path, time_range, **kwargs)
+                    else:
+                        speed = video_duration / audio_duration
+                        kwargs = {"speed": speed}
+                        if self.mute_original_video:
+                            kwargs["volume"] = 0.0
+                        media_seg = draft.VideoSegment(seg.media_path, time_range, **kwargs)
+                    add_movement = self.add_video_movement
 
             media_seg.clip_settings = ClipSettings(transform_x=0, transform_y=0)
 
@@ -438,7 +459,7 @@ class JianyingDraftBuilder:
                 )
                 script.add_segment(text_seg, "字幕轨道")
 
-            current_time += audio_duration
+            current_time += scene_duration
             total_duration = current_time
 
         if previous_media_seg is not None:

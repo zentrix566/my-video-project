@@ -3,7 +3,11 @@
 每段输出 mp4：
     - 视频轨：libx264，pix_fmt=yuv420p，movflags=+faststart（剪映 / QuickTime 兼容）
     - 音频轨：**剥掉**（-an）——避免和 AI 讲解语音打架
-    - 结尾多切 clip_tail_padding_s 秒，供 draft_composer 的 crop_video 兜底
+
+关于 clip_tail_padding_s：
+    - 现役调用方（make_doc_video.py）走 preserve_video_duration=True 合成，不需要尾余量。
+    - 参数保留是为了兼容"crop_video=True 合成"这种老玩法：视频段末尾多切一小截，
+      给 draft_composer.crop_video 分支留裁剪空间。
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ def cut_clips(
     out_dir: Path,
     *,
     logger: PipelineLogger,
-    clip_tail_padding_s: float = 0.3,
+    clip_tail_padding_s: float = 0.0,
     resume: bool = True,
     preset: str = "medium",
     crf: int = 20,

@@ -174,11 +174,10 @@ def _compose_jianying_draft_for_doc(
 ) -> str:
     """文档讲解模式专用合成函数。
 
-    与 make_video.py 里的 compose_jianying_draft 相比只有一处差别：
-        crop_video=True —— 视频比 TTS 长时裁剪到 TTS 长度，而不是速度拉伸。
-        （每段视频切段时已多加了 0.3s 尾巴，保证视频 ≥ TTS。）
-
-    同时关掉 add_image_movement / add_video_movement —— 原 mp4 已经有内容变化，不需要额外运镜。
+    与 make_video.py 里的 compose_jianying_draft 相比只有两处差别：
+        1. preserve_video_duration=True —— 视频段保留原时长，讲解讲完就静音、画面继续播。
+           这样最终成片时长 = 原 mp4 时长，不会因为 TTS 短于视频段而被裁掉尾巴。
+        2. add_image_movement / add_video_movement 全关 —— 原 mp4 已经有内容变化，不需要额外运镜。
     """
     jianying_cfg = style.get("jianying", {}) or {}
 
@@ -200,7 +199,7 @@ def _compose_jianying_draft_for_doc(
         canvas_height=style.get("canvas_height"),
         subtitle_preset=jianying_cfg.get("subtitle_preset"),
         transition_duration=jianying_cfg.get("transition_duration", "0.4s"),
-        crop_video=True,
+        preserve_video_duration=True,
     )
 
     segments = [
@@ -455,6 +454,7 @@ def run(args: argparse.Namespace) -> int:
                 for p in cut_clips(
                     mp4_path, scenes, clips_dir,
                     logger=logger, resume=not args.no_resume,
+                    clip_tail_padding_s=0.0,
                 )
             ]
         print(f"\n  [Step 3] 视频切段 {len(clip_paths)} 段 → {clips_dir}")
