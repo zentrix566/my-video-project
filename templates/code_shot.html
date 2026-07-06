@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>__TITLE__</title>
+<style>
+/* Pygments 语法着色（由 Python 端注入） */
+__PYGMENTS_CSS__
+
+/* 页面布局：viewport 恒定 1920×1080，与剪映画布一致 */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  font-family: __FONT_FAMILY__;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+body {
+  background: linear-gradient(135deg, __BG_START__ 0%, __BG_END__ 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px;
+  box-sizing: border-box;
+}
+
+/* Mac 风格窗口 */
+.window {
+  width: 1600px;
+  max-height: 940px;
+  background: #1e1e2e;
+  border-radius: 18px;
+  box-shadow:
+    0 40px 90px rgba(0, 0, 0, 0.55),
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.titlebar {
+  height: 46px;
+  background: #2b2b3a;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.traffic-lights {
+  display: flex;
+  gap: 8px;
+}
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.dot.red { background: #ff5f57; }
+.dot.yellow { background: #ffbd2e; }
+.dot.green { background: #28c840; }
+.filename {
+  color: #cfd3dc;
+  font-size: 15px;
+  letter-spacing: 0.4px;
+  margin-left: 8px;
+  user-select: none;
+}
+.filename .badge {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.08);
+  color: #a7b0be;
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin-left: 10px;
+  font-size: 12px;
+}
+
+.code-area {
+  padding: 28px 34px;
+  font-size: __FONT_SIZE__px;
+  line-height: __LINE_HEIGHT__;
+  color: #dcdfe4;
+  overflow: hidden;
+  flex: 1;
+}
+.code-area pre {
+  margin: 0;
+  white-space: pre;
+  font-family: inherit;
+}
+.code-area .linenos {
+  color: #4b5263;
+  padding-right: 20px;
+  user-select: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  margin-right: 20px;
+}
+.code-area table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+.code-area td {
+  vertical-align: top;
+  padding: 0;
+}
+
+/* 顶栏之下的路径胶囊，让观众一眼看到 focus 区间 */
+.subbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 28px;
+  background: #22222f;
+  color: #7a828e;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-family: inherit;
+}
+.subbar .lang {
+  color: #9ca3af;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  padding: 2px 8px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+</style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="traffic-lights">
+        <div class="dot red"></div>
+        <div class="dot yellow"></div>
+        <div class="dot green"></div>
+      </div>
+      <span class="filename">__TITLE__<span class="badge">__LINE_RANGE__</span></span>
+    </div>
+    <div class="subbar">
+      <span>__PROJECT_LABEL__</span>
+      <span class="lang">__LANGUAGE__</span>
+    </div>
+    <div class="code-area">
+__PYGMENTS_HTML__
+    </div>
+  </div>
+</body>
+</html>

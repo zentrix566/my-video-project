@@ -1,0 +1,50 @@
+{
+  "description": "代码走读片 —— 1920x1080 横屏、沉稳女声（VV）、vlog 大白字幕、静态画面、Playwright UI/代码截图",
+  "canvas_width": 1920,
+  "canvas_height": 1080,
+  "target_aspect_ratio": "16:9",
+  "scene_count": 8,
+  "tts": {
+    "url": "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional",
+    "resource_id": "seed-tts-2.0",
+    "speaker": "zh_female_vv_uranus_bigtts",
+    "format": "mp3",
+    "sample_rate": 24000
+  },
+  "code_shot": {
+    "theme": "one-dark",
+    "font_family": "Fira Code, JetBrains Mono, Consolas, Menlo, monospace",
+    "font_size_px": 22,
+    "line_height": 1.55,
+    "max_lines": 42,
+    "window_style": "mac",
+    "background_gradient": ["#1a1a2e", "#16213e"]
+  },
+  "ui_shot": {
+    "viewport_width": 1920,
+    "viewport_height": 1080,
+    "device_scale_factor": 1,
+    "default_wait_ms": 1500
+  },
+  "ui_video": {
+    "default_warmup_ms": 2000,
+    "default_tail_ms": 3000,
+    "default_duration_ms": 6000,
+    "crf": 22,
+    "preset": "fast"
+  },
+  "dev_server": {
+    "default_port": 5173,
+    "startup_timeout_s": 40
+  },
+  "jianying": {
+    "add_image_movement": false,
+    "add_video_movement": false,
+    "split_subtitles": true,
+    "fade_transition": true,
+    "transition_duration": "0.3s",
+    "camera_preset": "pan",
+    "subtitle_preset": "vlog",
+    "unique_draft_name": true
+  }
+}

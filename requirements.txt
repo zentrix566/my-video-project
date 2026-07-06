@@ -4,3 +4,7 @@ pydantic>=1.9.0,<3
 requests>=2.31.0
 Pillow>=10.0.0
 pyJianYingDraft>=0.2.6,<1
+# 代码走读流水线（make_code_walk.py）新增依赖
+playwright>=1.40
+Pygments>=2.16
+imageio-ffmpeg>=0.4

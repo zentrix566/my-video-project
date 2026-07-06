@@ -4,6 +4,10 @@
 
 参考自 `E:\github\test-agent-plan`（诗词/故事流水线），在其之上多加了一层「主题 → 旁白稿」的 LLM 步骤，把「必须先写好一整段 story」的门槛压到了最低。
 
+另外附带两条特殊流水线（都零 API 费用或极低成本，只复用下游的 TTS + 剪映合成）：
+- **梗图模式**（`make_meme_video.py`）：本地图片 → 剪映草稿
+- **代码走读模式**（`make_code_walk.py`）：前端项目 → 代码高亮 + UI 截图 → 剪映草稿（详见文末）
+
 ---
 
 ## 一句话使用
@@ -22,6 +26,7 @@ python make_video.py --topic "南明李定国"
 my-video-project/
 ├── make_video.py                 # 主入口 CLI（主题 → 视频）
 ├── make_meme_video.py            # 附入口 CLI（本地图 → 梗图剪映草稿）
+├── make_code_walk.py             # 附入口 CLI（前端项目 → 代码走读视频）
 ├── curate_photos.py              # 一键分类：可用 / 不可用 / 动图 + 重命名
 ├── curate_manual.py              # 人肉挑图 GUI（tkinter，键盘操作）
 ├── pipeline/
@@ -31,6 +36,9 @@ my-video-project/
 │   ├── image_gen.py              # Step 2  豆包 Seedream 图片生成
 │   ├── tts.py                    # Step 3  字节 Seed-TTS 配音
 │   ├── draft_composer.py         # Step 4  pyJianYingDraft 装配草稿
+│   ├── project_scan.py           # 代码走读 Step 0：扫描 Vue/React 前端项目元信息
+│   ├── walk_narrator.py          # 代码走读 Step 1：LLM 生成讲解稿 + 分镜规范
+│   ├── shot_renderer.py          # 代码走读 Step 2：Playwright 抓 UI + Pygments 渲染代码
 │   ├── meme_composer.py          # 梗图专用装配（无音频轨、模糊背景）
 │   ├── photo_filter.py           # 图片筛选（尺寸/宽高比阈值）
 │   ├── photo_ledger.py           # 已用清单账本（跨次运行不重复挑）
@@ -42,10 +50,14 @@ my-video-project/
 ├── configs/styles/
 │   ├── epic.json                 # 默认 · 史诗历史片 1920x1080
 │   ├── documentary.json          # 沉稳纪录片 1920x1080
-│   └── shorts.json               # 竖屏短视频 1080x1920
+│   ├── shorts.json               # 竖屏短视频 1080x1920
+│   └── codewalk.json             # 代码走读 1920x1080（Fira Code + one-dark）
+├── templates/
+│   └── code_shot.html            # 代码截图 HTML 模板（Mac 窗口装饰 + 渐变背景）
 ├── outputs/
 │   ├── logs/*.jsonl              # 结构化流水线日志
-│   ├── projects/<slug>/<ts>/     # 每次运行的中间产物（图片/音频/JSON）
+│   ├── projects/<slug>/<ts>/     # 主流水线中间产物
+│   ├── code_walks/<slug>/<ts>/   # 代码走读流水线中间产物
 │   └── blur_cache/               # 模糊背景 PIL 缓存（自动重建）
 └── examples/
     ├── run_li_dingguo.sh         # 主流水线样例
@@ -64,6 +76,14 @@ my-video-project/
 cd E:\github\my-video-project
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
+```
+
+**仅代码走读模式额外需要**：安装 Playwright 的 Chromium（一次性，~110MB）：
+
+```bash
+# 走火山镜像，国内下载快
+$env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
+.\.venv\Scripts\python -m playwright install chromium
 ```
 
 配置密钥（火山方舟 Ark Key，可与 `test-agent-plan` 共用同一把）：
@@ -149,9 +169,12 @@ copy ..\test-agent-plan\.env .env
 
 | 预设 | 画布 | 音色 | 字幕 | 运镜 | 视觉风格 |
 |---|---|---|---|---|---|
-| **epic**（默认） | 1920×1080 | `zh_male_shaonianzixin_moon_bigtts` | cinema（白字半透黑底） | mixed（缩放+平移+对角） | 国风写实电影感、光影考究 |
+| **epic**（默认） | 1920×1080 | `zh_female_vv_uranus_bigtts` | cinema（白字半透黑底） | mixed（缩放+平移+对角） | 国风写实电影感、光影考究 |
 | documentary | 1920×1080 | 同上 | classic（米黄色字·古风） | pan（缓慢平移） | 水墨工笔历史插画、暗色调 |
 | shorts | 1080×1920 | 同上 | vlog（大白字+阴影） | all（快节奏） | 竖屏鲜艳、强对比 |
+| codewalk | 1920×1080 | 同上 | classic（代码走读专用） | 无 | Fira Code + one-dark，仅代码走读入口使用 |
+
+> 所有风格预设的默认音色都是账户里已知可用的 `zh_female_vv_uranus_bigtts`；想换其它音色可用 `--speaker <id>` 或改对应 JSON 里的 `tts.speaker`。
 
 修改风格：直接编辑 `configs/styles/<name>.json`。新增风格：新建一个 JSON 文件即可自动被 `--style` 识别。
 
@@ -176,7 +199,7 @@ Step 4  pipeline.draft_composer    → D:/Program Files/JianyingPro Drafts/<slug
 ```
 
 - **Step 0** 是相对参考项目的新增能力：用户不用自己写整段故事，LLM 会写。
-- **Step 0.5** 是给"介绍类"视频专门加的：跑完给出 10 条不同定位的 B 站标题候选（流量向 / 正经历史 / 悬念钩子 / 引经据典 / 系列人设 5 大类），并 ★ 标出推荐；结果落盘为 `titles.json`，流水线开始时打印一次、结束时再打印一次方便复制。不想要就加 `--skip-titles`。
+- **Step 0.5** 给"介绍类"视频自动产出 10 条 B 站标题候选（结果落盘为 `titles.json`），详见下方 [B 站标题候选](#b-站标题候选step-05) 章节；不想要就加 `--skip-titles`。
 - 所有中间产物按 `outputs/projects/<slug>/<YYYYMMDD_HHMMSS>/` 目录组织，便于事后重跑。
 - 结构化日志：`outputs/logs/pipeline_<ts>.jsonl`，每步 API 调用一行 JSON。
 
@@ -184,7 +207,7 @@ Step 4  pipeline.draft_composer    → D:/Program Files/JianyingPro Drafts/<slug
 
 ## B 站标题候选（Step 0.5）
 
-介绍类视频最费脑的往往是起标题。Step 0.5 在旁白稿写完后自动跑一次轻量 LLM 调用（约 15 秒 / ~0.04 元），基于同一份稿子产出 **10 条不同定位的候选标题**：
+介绍类视频最费脑的往往是起标题。Step 0.5 在旁白稿写完后自动跑一次轻量 LLM 调用（约 15 秒 / ~0.04 元），基于同一份稿子产出 **10 条不同定位的候选标题**，覆盖 5 大类（流量向 / 正经历史 / 悬念钩子 / 引经据典 / 系列人设），每类 2 条：
 
 | 类别 | 定位 | 举例 |
 |---|---|---|
@@ -194,13 +217,11 @@ Step 4  pipeline.draft_composer    → D:/Program Files/JianyingPro Drafts/<slug
 | **literary 引经据典** | 诗句/文言/文学感 | 「一寸丹心付梅岭·史可法孤忠记」 |
 | **series 系列人设** | 账号 IP 化 | 「【南明孤忠 01】史可法·扬州不肯降的书生」 |
 
-每条附一句 15-30 字的推荐理由，最后 ★ 标出 LLM 认为最优的一条。
+每条附一句 15-30 字的推荐理由，最后 ★ 标出 LLM 认为最优的一条；流水线开始与结束时各打印一次方便复制。
 
-**产物**：`outputs/projects/<slug>/<ts>/titles.json`，结构 `{primary_title, variants:[{category,title,reason},...], recommended_index, recommend_reason}`；可直接读进任何投稿脚本里挑一条填 B 站/抖音/YouTube 投稿页 title 框。
-
-**关闭**：`--skip-titles`（省 ~0.04 元 / ~15 秒 LLM 调用）。
-
-**复用**：`--resume-latest --skip-llm` 会直接读盘上的 `titles.json`，不会重跑；想强制重新生成就删掉 `titles.json` 后再跑同样命令。
+- **产物**：`outputs/projects/<slug>/<ts>/titles.json`，结构 `{primary_title, variants:[{category,title,reason},...], recommended_index, recommend_reason}`——可直接读进任何投稿脚本填 B 站/抖音/YouTube 投稿页 title 框。
+- **开关**：`--skip-titles` 关掉（省 ~0.04 元 / ~15 秒）。
+- **复用**：`--resume-latest --skip-llm` 会直接读盘上的 `titles.json`，不会重跑；想强制重生成就删掉 `titles.json` 再跑同样命令。
 
 ---
 
@@ -375,6 +396,154 @@ C:/Users/EDY/Pictures/2026-06/
 # 想全部重来
 .\.venv\Scripts\python make_meme_video.py --source "..." --reset-ledger --show-ledger
 ```
+
+---
+
+## 附：前端项目 → 代码走读视频剪映草稿
+
+主流水线适合讲历史/人物/文学；如果你想做的是「讲一个开源前端项目」（GitHub 上的 Vue/React 小玩具、Demo、自己写的 side project…），画面素材应该是**项目跑起来的真实截图**加**关键代码段的语法高亮图**，而不是 AI 画的想象图。这个入口就是干这个的：读取本地 Vue/React 项目 → 起 dev server → Playwright 抓 UI 截图 + Pygments 渲染代码高亮图 → 混排出一部 5-6 分钟的技术走读视频。
+
+跟主流水线的关键区别：**Step 0-2 完全换掉**（不再花图片钱），Step 3-4 复用（TTS + 剪映合成不变）。
+
+### 一键出片
+
+以讲解 `E:\github\crazy-people` 为例：
+
+```bash
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" `
+    --brief "一个 Vue3 前端 Demo，讲讲它怎么用几百行代码模拟疯人院" `
+    --draft-folder "D:/software/JianyingPro Drafts"
+```
+
+跑完在你的剪映草稿目录出现 `<项目名>_<时间戳>/`，打开剪映即可编辑。费用约 **0.20 元**（比图片流水线便宜一个数量级；只有 Step 1 LLM 和 Step 3 TTS 花钱）。
+
+### 常用命令
+
+```bash
+# 1) 只估费，不真跑
+.\.venv\Scripts\python make_code_walk.py --project "E:/github/crazy-people" --dry-run
+
+# 2) 加要点、指定场景数、跳过所有交互卡点
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" `
+    --brief "重点讲 world.js 的 tick 循环和 constants.js 的配置驱动" `
+    --scenes 8 -y
+
+# 3) dev server 已在跑（比如你手动 npm run dev 了），别再起一次
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" --skip-dev-server
+
+# 4) dev server 端口不是默认 5173
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/some-react-app" --dev-port 3000
+
+# 5) 断点续跑：LLM 已跑完、图也截好了，只重跑剪映合成
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" `
+    --resume-latest --skip-scan --skip-llm --skip-shots --skip-tts
+
+# 6) 讲稿不满意，编辑 generated_scenes.json 后从 Step 2 起续跑
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" --resume-latest --skip-llm
+
+# 7) 只出稿件不出图（想先看讲得对不对）
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" `
+    --skip-shots --skip-tts --skip-jianying
+
+# 8) 换 TTS 音色 / 覆盖剪映目录
+.\.venv\Scripts\python make_code_walk.py `
+    --project "E:/github/crazy-people" `
+    --speaker zh_male_yangguang_emo_v2_mars_bigtts `
+    --draft-folder "D:/software/JianyingPro Drafts"
+```
+
+### 五步流水线（代码走读版）
+
+```
+--project <PATH>
+    │  Step 0  pipeline.project_scan   → project_meta.json
+    ▼                                    （扫 package.json/README/vite.config，挑 12 个关键文件）
+项目元信息（含 README 全文 + 关键文件前 60 行摘录）
+    │  Step 1  pipeline.walk_narrator  → generated_scenes.json      (LLM)
+    ▼                                    （8 段讲稿 + 每段截图规范）
+scenes[]（含 shot_spec: {type: ui/code/cover, url_path/wait_ms/interactions | file/focus_lines/language}）
+    │  Step 2  pipeline.shot_renderer  → outputs/code_walks/<slug>/<ts>/images/*.png
+    │                                    （UI 截图 = Playwright + dev server；代码图 = Pygments + Playwright）
+    │  Step 3  pipeline.tts            → outputs/code_walks/<slug>/<ts>/audio/*.mp3
+    ▼                                    （字节 Seed-TTS，复用主流水线）
+Step 4  pipeline.draft_composer   → <draft_folder>/<项目名>_<时间戳>/
+                                    （pyJianYingDraft，复用主流水线）
+```
+
+### LLM 输出的分镜规范
+
+`generated_scenes.json` 里每段 scene 除了 `id`/`narration`，还有一个 `shot_spec`，控制那一段画面怎么截。你可以在卡点 2 手动改 JSON 后续跑：
+
+**UI 截图**（`type: "ui"`）—— 从 dev server 抓：
+```json
+{
+  "type": "ui",
+  "url_path": "/",              // 有 vue-router 就填对应路径，否则恒为 "/"
+  "wait_ms": 3000,              // 加载后再等几毫秒（让动态内容有时间展开）
+  "interactions": [
+    {"action": "click_text", "text": "混乱 +", "times": 3, "interval_ms": 300},
+    {"action": "wait", "ms": 500},
+    {"action": "click_selector", "selector": ".btn-primary"}
+  ]
+}
+```
+
+**代码高亮图**（`type: "code"`）—— 用 Pygments 渲染带 Mac 窗口装饰的截图：
+```json
+{
+  "type": "code",
+  "file": "src/game/world.js",  // 相对项目根，必须在 project_meta.json 的 key_files 里
+  "focus_lines": [1, 42],       // 1-based 闭区间，最多 42 行（超了字号会太小）
+  "language": "javascript",     // prism 标识：javascript/typescript/jsx/tsx/vue/json/html/css
+  "title": "src/game/world.js"
+}
+```
+
+**封面**（`type: "cover"`）—— 首页 UI 上叠一层大标题：
+```json
+{
+  "type": "cover",
+  "title": "crazy-people",
+  "subtitle": "Vue3 · 密闭空间发疯小人",
+  "background_url_path": "/"
+}
+```
+
+### 交互式确认卡点
+
+跟主流水线一致，两处停下让你确认：
+
+- **卡点 1（Step 0 之后）**：打印扫描结果（框架、路由、12 个关键文件）
+- **卡点 2（Step 1 之后，截图之前）**：打印 8 段讲稿 + 每段的 shot_spec 摘要；选 `e` 可以打开 `generated_scenes.json` 手动改动分镜（换代码文件、调 focus_lines、加/删 interactions），保存后回车续跑
+
+加 `--yes` / `-y` 关闭卡点一路跑到底。
+
+### 常见问题
+
+**Q：dev server 起不来？端口占用？**
+A：先手动 `npm run dev` 起来，然后加 `--skip-dev-server`。或者换端口 `--dev-port 5174`。
+
+**Q：Playwright 装 Chromium 卡住？**
+A：先设镜像变量再装：`$env:PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"`，然后 `playwright install chromium`。装过一次以后不用再装。
+
+**Q：LLM 选的代码文件我不喜欢？**
+A：Step 1 跑完在卡点 2 选 `e`，打开 `generated_scenes.json` 手动改 `shot_spec.file` 和 `focus_lines`（文件必须在 `project_meta.json` 的 `key_files` 列表里），保存后回车续跑。或者直接编辑 `pipeline/project_scan.py` 里的 `ROLE_WEIGHT` 调整关键文件挑选权重。
+
+**Q：只想看 8 张图长啥样，不想跑 TTS？**
+A：`--skip-tts --skip-jianying`，图会落在 `outputs/code_walks/<项目名>/<时间戳>/images/`。
+
+**Q：UI 截图内容随机（动画/随机数）导致每次不同？**
+A：这是特性不是 bug —— 交互 Demo 类项目本来就要展示"活的画面"。LLM 生成的 narration 已经用了"你会看到"这种不依赖具体像素的话术。想要固定截图，可以手动改 shot_spec 加 `wait_ms` 或 `interactions` 控制状态。
+
+**Q：项目不是 Vue？**
+A：`project_scan.py` 已支持识别 Vue2/Vue3/React/Next.js/Nuxt/Svelte 六种框架，都从 `package.json` 的依赖里推断，dev 端口从对应的 `*.config.js` 里抠或用框架默认值。逻辑通用，理论上任何 `npm run dev` 起得来的 SPA 都能跑。
 
 ---
 

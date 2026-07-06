@@ -30,7 +30,7 @@ def synthesize_audio(
     url = url or os.environ.get("TTS_API_URL",
         "https://openspeech.bytedance.com/api/v3/plan/tts/unidirectional")
     resource_id = resource_id or os.environ.get("TTS_RESOURCE_ID", "seed-tts-2.0")
-    speaker = speaker or os.environ.get("TTS_SPEAKER", "zh_male_shaonianzixin_moon_bigtts")
+    speaker = speaker or os.environ.get("TTS_SPEAKER", "zh_female_vv_uranus_bigtts")
     audio_format = audio_format or os.environ.get("TTS_FORMAT", "mp3")
 
     headers = {

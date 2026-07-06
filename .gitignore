@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .env
 outputs/projects/
+outputs/code_walks/
 outputs/logs/
 outputs/blur_cache/
 .pytest_cache/
