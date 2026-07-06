@@ -219,7 +219,13 @@ def extract_frames(
             "-q:v", "3",                  # JPEG 质量，2-5 之间，3 已经很清晰
             str(out_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if result.returncode != 0 or not out_path.exists():
             raise SystemExit(
                 f"ffmpeg 抽帧失败（时间点 {ts:.2f}s → {out_path.name}）：\n"
@@ -239,19 +245,26 @@ def extract_frames(
 
 def save_doc_content(
     output_path: Path,
-    pdf_result: dict[str, Any],
+    pdf_result: dict[str, Any] | None,
     video_meta: VideoMeta,
     frame_paths: list[Path],
     frame_timestamps: list[float],
 ) -> None:
-    """把 Step 0 全部产物落盘成一份 JSON，便于 --skip-parse 复用。"""
-    payload = {
-        "pdf": {
+    """把 Step 0 全部产物落盘成一份 JSON，便于 --skip-parse 复用。
+
+    pdf_result 为 None 时写入空 stub，供 make_narration_video.py 这类纯视频入口复用。
+    """
+    if pdf_result is None:
+        pdf_section = {"path": "", "page_count": 0, "char_count": 0, "full_text": ""}
+    else:
+        pdf_section = {
             "path": pdf_result["path"],
             "page_count": pdf_result["page_count"],
             "char_count": pdf_result["char_count"],
             "full_text": pdf_result["full_text"],
-        },
+        }
+    payload = {
+        "pdf": pdf_section,
         "video": asdict(video_meta),
         "frames": [
             {"index": i, "path": str(p), "timestamp_s": round(t, 3)}

@@ -41,6 +41,38 @@ from PIL import Image, ImageChops
 #  通用工具（两条流水线共享）
 # ============================================================
 
+_SUBTITLE_SEPARATORS = re.compile(r'([，。！,!?；：:、\n])')
+
+
+def smart_split(text: str) -> list[str]:
+    """按中文/英文标点把一段 narration 拆成子句列表。
+
+    保留结尾标点，跳过空段。若没有任何标点匹配，返回单元素列表 [原文]。
+    tts.py 和 draft_composer.py 共用此函数，保证"切成几句 → TTS 几句 → 字幕几句"三路一致。
+    """
+    parts = _SUBTITLE_SEPARATORS.split(text)
+    sentences: list[str] = []
+    buf = ""
+    for part in parts:
+        if _SUBTITLE_SEPARATORS.fullmatch(part):
+            buf += part
+            if buf.strip():
+                sentences.append(buf.strip())
+            buf = ""
+        else:
+            buf += part
+    if buf.strip():
+        sentences.append(buf.strip())
+    if not sentences:
+        sentences = [text]
+    return sentences
+
+
+def strip_punctuation(text: str) -> str:
+    """去掉子句尾部的中文/英文标点，返回干净字幕文本。"""
+    return _SUBTITLE_SEPARATORS.sub('', text).strip()
+
+
 def load_env(path: Path) -> None:
     """把 .env 文件里的键值对 setdefault 进 os.environ（不覆盖已存在的值）。"""
     if not path.exists():
@@ -579,7 +611,7 @@ def vision_chat(
     images: list[Path],
     prompt: str,
     *,
-    api_key: str,
+    api_key: str | None = None,
     logger: "PipelineLogger | None" = None,
     base_url: str | None = None,
     model: str | None = None,
@@ -591,14 +623,27 @@ def vision_chat(
     走 OpenAI 兼容多模态协议：content 是一个 list，包含 1 个 text part + N 个 image_url part，
     图片用 base64 data URL 直接内联，不依赖任何外部图床。
 
-    模型 ID 从 VISION_MODEL 环境变量读，缺省 doubao-seed-1.6-flash；base_url / api_key 与文本 LLM 共用。
-    需账户已开通对应视觉模型，否则 Ark 会明确返回未开通错误。
+    优先级：显式传参 > VISION_API_KEY/VISION_BASE_URL/VISION_MODEL 环境变量 >
+    回落到 AGENT_API_KEY / PROMPT_BASE_URL / "doubao-seed-1.6-flash"。
+    这样可以让文本 LLM 走 agent-plan key，视觉单独走标准 Ark key，互不影响。
     """
     import base64
     import requests
 
+    resolved_api_key = (
+        api_key
+        or os.environ.get("VISION_API_KEY")
+        or os.environ.get("AGENT_API_KEY")
+    )
+    if not resolved_api_key:
+        raise RuntimeError(
+            "vision_chat 缺少 API Key：请设置 VISION_API_KEY 或 AGENT_API_KEY 环境变量。"
+        )
+
     resolved_base_url = (
-        base_url or os.environ.get("PROMPT_BASE_URL")
+        base_url
+        or os.environ.get("VISION_BASE_URL")
+        or os.environ.get("PROMPT_BASE_URL")
         or "https://ark.cn-beijing.volces.com/api/plan/v3"
     ).rstrip("/")
     resolved_model = model or os.environ.get("VISION_MODEL", "doubao-seed-1.6-flash")
@@ -630,7 +675,7 @@ def vision_chat(
         resp = requests.post(
             f"{resolved_base_url}/chat/completions",
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": f"Bearer {resolved_api_key}",
                 "Content-Type": "application/json",
             },
             json={
@@ -650,6 +695,7 @@ def vision_chat(
         logger.info(
             "vision_chat.request",
             model=resolved_model,
+            base_url=resolved_base_url,
             image_count=len(images),
             prompt_chars=len(prompt),
         )

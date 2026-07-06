@@ -1,17 +1,21 @@
-"""PDF + 本地 mp4 → 剪映草稿（一键流水线）—— 文档讲解模式。
+"""本地 mp4 → 剪映草稿（一键流水线）—— 视频讲解模式（无 PDF）。
 
-    python make_doc_video.py --pdf "path/to/需求文档.pdf" --mp4 "path/to/演示.mp4"
-    python make_doc_video.py --pdf ... --mp4 ... --scenes 8 --yes
-    python make_doc_video.py --pdf ... --mp4 ... --dry-run
-    python make_doc_video.py --pdf ... --mp4 ... --resume-latest --skip-parse --skip-vision --skip-llm
+给一段屏幕录制/操作演示视频，自动补齐 AI 配音 + 字幕，原视频音频会被剥离。
+和 make_doc_video.py 的区别：不需要 PDF 业务背景，讲稿完全靠视频内容 +（可选） --brief。
+
+用法：
+    python make_narration_video.py --mp4 "path/to/screen.mp4"
+    python make_narration_video.py --mp4 ... --brief "讲讲这个工具怎么装插件" --scenes 6
+    python make_narration_video.py --mp4 ... --no-vision -y
+    python make_narration_video.py --mp4 ... --resume-latest --skip-parse --skip-vision --skip-llm
 
 流水线阶段（六步）：
-    Step 0  文档/视频解析     pipeline.doc_parse        (pdfplumber + ffmpeg 抽帧)
-    Step 1  逐帧视觉理解      pipeline.video_understand (豆包视觉大模型)
-    Step 2  讲稿 + 切段时间戳 pipeline.doc_narrator     (文本 LLM)
-    Step 3  ffmpeg 切段       pipeline.video_cut        (本地 ffmpeg)
-    Step 4  TTS 配音          pipeline.tts              (字节 Seed-TTS，复用)
-    Step 5  剪映草稿          pipeline.draft_composer   (pyJianYingDraft，复用)
+    Step 0  视频解析          pipeline.doc_parse         (ffmpeg probe + 均匀抽帧)
+    Step 1  逐帧视觉理解      pipeline.video_understand  (豆包视觉大模型；--no-vision 可兜底)
+    Step 2  讲稿 + 切段时间戳 pipeline.narration_narrator(文本 LLM，无 PDF 背景)
+    Step 3  ffmpeg 切段       pipeline.video_cut         (本地 ffmpeg，-an 剥原音)
+    Step 4  TTS 配音          pipeline.tts               (字节 Seed-TTS，复用)
+    Step 5  剪映草稿          pipeline.draft_composer    (pyJianYingDraft，复用)
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +32,15 @@ from pipeline.helpers import (
 )
 from pipeline.styles import list_style_names, load_style
 from pipeline.doc_parse import (
-    extract_pdf_text, probe_video, extract_frames,
+    probe_video, extract_frames,
     save_doc_content, load_doc_content,
 )
 from pipeline.video_understand import (
     caption_frames, load_frame_captions, write_empty_captions,
 )
-from pipeline.doc_narrator import generate_doc_scenes, load_generated_scenes
+from pipeline.narration_narrator import (
+    generate_narration_scenes, load_generated_scenes,
+)
 from pipeline.video_cut import cut_clips
 from pipeline.tts import synthesize_audio, synthesize_audio_per_sentence
 from pipeline.draft_composer import JianyingDraftBuilder, SegmentInfo, SentenceInfo
@@ -44,7 +49,7 @@ from pipeline.camera import CAMERA_PRESETS
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
-DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "doc_videos"
+DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "narration_videos"
 DEFAULT_LOG_DIR = ROOT / "outputs" / "logs"
 DEFAULT_DRAFT_FOLDER = "D:/Program Files/JianyingPro Drafts"
 
@@ -75,17 +80,13 @@ def _prompt_confirm(prompt: str, file_path: Path) -> str:
         print("  请输入 y / n / e（回车默认 y）")
 
 
-def _preview_doc_content(doc_content: dict[str, Any]) -> None:
-    pdf = doc_content["pdf"]
+def _preview_video_content(doc_content: dict[str, Any]) -> None:
+    """Step 0 后的预览。narration 模式下 pdf 字段是空 stub，不打印。"""
     video = doc_content["video"]
     frames = doc_content["frames"]
     print("\n" + "─" * 60)
-    print("  Step 0 文档 + 视频解析")
+    print("  Step 0 视频解析（无 PDF）")
     print("─" * 60)
-    print(f"  PDF:         {pdf['path']}")
-    print(f"    页数:      {pdf['page_count']}   总字符: {pdf['char_count']}")
-    excerpt = (pdf["full_text"] or "")[:180].replace("\n", " ⏎ ")
-    print(f"    首段摘录:  {excerpt}...")
     print(f"  MP4:         {video['path']}")
     print(f"    时长:      {video['duration_s']}s   分辨率: {video['width']}x{video['height']}   fps: {video['fps']}")
     print(f"  抽帧:        {len(frames)} 张 → 时间点 {[round(f['timestamp_s'], 1) for f in frames]}")
@@ -115,24 +116,23 @@ def _preview_scenes(scenes_data: dict[str, Any]) -> None:
 
 
 # ============================================================
-#  费用预估
+#  费用预估（无 PDF）
 # ============================================================
 
-def estimate_cost(scene_count: int, pdf_chars: int, frame_count: int) -> str:
-    """PDF + mp4 流水线预估：doc_parse 0 元 + 视觉 LLM + 文本 LLM + TTS。"""
-    # 参考单价（元 / 千 token；实际以火山账单为准）
+def estimate_cost(scene_count: int, frame_count: int) -> str:
+    """纯视频流水线预估：视频解析本地 0 元 + 视觉 LLM + 文本 LLM + TTS。"""
     _LLM_TEXT_PER_KTOKEN = 0.008        # ark-code-latest
     _LLM_VISION_PER_KTOKEN = 0.015      # doubao-seed-1.6-flash（含图片 token）
     _TTS_PER_CHAR = 0.0001              # seed-tts-2.0
     _IMAGE_TOKENS_EACH = 1500           # 720p 单帧粗估
 
-    # Step 1 视觉：输入 = system prompt + PDF 摘要(3K 字≈4.5K tok) + N 张图，输出 ≈ 每帧 80 tok
-    step1_in = 3000 + int(pdf_chars * 1.5 * 0.4) + frame_count * _IMAGE_TOKENS_EACH
+    # Step 1 视觉：输入 = system prompt + N 张图，输出 ≈ 每帧 80 tok
+    step1_in = 1500 + frame_count * _IMAGE_TOKENS_EACH
     step1_out = frame_count * 80 + 200
     step1_cost = (step1_in + step1_out) / 1000 * _LLM_VISION_PER_KTOKEN
 
-    # Step 2 文本讲稿：输入 = PDF 全文(pdf_chars * 1.5 tok) + 帧描述，输出 ≈ N * 200 tok
-    step2_in = int(pdf_chars * 1.5) + frame_count * 100 + 1500
+    # Step 2 文本讲稿：输入 = 帧描述 + brief，输出 ≈ N * 200 tok
+    step2_in = frame_count * 100 + 1500
     step2_out = scene_count * 200
     step2_cost = (step2_in + step2_out) / 1000 * _LLM_TEXT_PER_KTOKEN
 
@@ -144,7 +144,7 @@ def estimate_cost(scene_count: int, pdf_chars: int, frame_count: int) -> str:
 
     return "\n".join([
         "========== 费用预估 (粗略) ==========",
-        "  Step 0  文档/视频解析    本地 pdfplumber + ffmpeg              →  0 元",
+        "  Step 0  视频解析        本地 ffmpeg                              →  0 元",
         f"  Step 1  视觉大模型      输入 ~{step1_in} tok + {frame_count} 帧图      →  约 {step1_cost:.4f} 元",
         f"  Step 2  文本讲稿 LLM    输入 ~{step2_in} tok / 输出 ~{step2_out} tok    →  约 {step2_cost:.4f} 元",
         "  Step 3  ffmpeg 切段     本地                                    →  0 元",
@@ -152,16 +152,16 @@ def estimate_cost(scene_count: int, pdf_chars: int, frame_count: int) -> str:
         "  Step 5  剪映合成        本地 pyJianYingDraft                    →  0 元",
         "  ---------------------------",
         f"  合计:  约 {total:.4f} 元",
-        "  提示: 视觉大模型消耗取决于账户开通的具体模型，实际费用以火山账单为准",
+        "  提示: 用 --no-vision 兜底可省掉 Step 1 视觉大模型费用",
         "=========================================",
     ])
 
 
 # ============================================================
-#  Step 5: 剪映合成（本地版本 — 保留原 mp4 时长，crop_video=True）
+#  Step 5: 剪映合成 —— 保留原 mp4 时长，视频段无运镜
 # ============================================================
 
-def _compose_jianying_draft_for_doc(
+def _compose_jianying_draft_for_narration(
     project_name: str,
     scenes: list[dict[str, Any]],
     clip_paths: list[str],
@@ -172,14 +172,16 @@ def _compose_jianying_draft_for_doc(
     draft_folder_path: str,
     fade_transition: bool = True,
 ) -> str:
-    """文档讲解模式专用合成函数。
+    """录屏讲解模式专用合成。
 
-    与 make_video.py 里的 compose_jianying_draft 相比差别：
-        1. preserve_video_duration=True —— 视频段保留原时长，讲解讲完就静音、画面继续播。
-           这样最终成片时长 = 原 mp4 时长，不会因为 TTS 短于视频段而被裁掉尾巴。
-        2. add_image_movement / add_video_movement 全关 —— 原 mp4 已经有内容变化，不需要额外运镜。
-        3. 逐句 TTS —— 每段 narration 按标点切成子句、每句独立合成，用真实音频时长驱动字幕，
-           彻底消除按字符比例估算字幕时长带来的漂移。
+    与 doc_video 完全相同的两个关键点：
+        1. preserve_video_duration=True —— 视频段保留原时长，成片总长 = 原 mp4（若 TTS 超长，视频会微慢放）。
+        2. add_video_movement=False    —— 录屏本身有内容变化，不叠加运镜。
+
+    专有决策：
+        3. 逐句 TTS —— 每段 narration 按标点切成子句、每句独立合成，用**真实音频时长**驱动字幕，
+           彻底消除按字符比例估算字幕时长带来的"字幕先跳、音频还在念"漂移。
+           scene_audio_groups 结构见 pipeline.tts.synthesize_audio_per_sentence 返回值。
     """
     jianying_cfg = style.get("jianying", {}) or {}
 
@@ -210,6 +212,7 @@ def _compose_jianying_draft_for_doc(
             SentenceInfo(text=item["text"], audio_path=item["audio_path"])
             for item in group.get("sentences", [])
         ]
+        # audio_path 传第一句作为兼容占位；draft_composer 优先用 sentences 列表
         first_audio = sentence_infos[0].audio_path if sentence_infos else ""
         segments.append(SegmentInfo(
             subtitle=s["narration"],
@@ -244,22 +247,18 @@ def _compose_jianying_draft_for_doc(
 def run(args: argparse.Namespace) -> int:
     load_env(ENV_FILE)
 
-    pdf_path = Path(args.pdf).resolve()
     mp4_path = Path(args.mp4).resolve()
-    if not pdf_path.exists() or pdf_path.suffix.lower() != ".pdf":
-        raise SystemExit(f"--pdf 路径不存在或不是 PDF: {pdf_path}")
     if not mp4_path.exists() or mp4_path.suffix.lower() not in (".mp4", ".mov", ".m4v"):
         raise SystemExit(f"--mp4 路径不存在或不是 mp4/mov: {mp4_path}")
 
     style = load_style(args.style)
     draft_folder_path = args.draft_folder or style.get("draft_folder_path") or DEFAULT_DRAFT_FOLDER
 
-    # ---- 输出目录 & 日志（要先建，才能给 doc_parse 打日志） ----
     logger = PipelineLogger(DEFAULT_LOG_DIR)
     if args.output_dir and args.resume_latest:
         raise SystemExit("--output-dir 与 --resume-latest 不能同时使用")
 
-    project_slug = safe_slug(pdf_path.stem, fallback="doc")
+    project_slug = safe_slug(mp4_path.stem, fallback="narration")
     if args.output_dir:
         output_dir = Path(args.output_dir)
         for child in ("audio", "responses", "frames", "clips"):
@@ -280,7 +279,6 @@ def run(args: argparse.Namespace) -> int:
             (output_dir / child).mkdir(parents=True, exist_ok=True)
 
     # ---- 场景数：优先命令行；否则用视频时长 / 6，夹到 [4, 10] ----
-    # 需要先读一下 mp4 时长；如果 --skip-parse 就走磁盘上的 doc_content.json
     doc_content_path = output_dir / "doc_content.json"
     duration_probe_s: float | None = None
     if args.skip_parse and doc_content_path.exists():
@@ -290,35 +288,38 @@ def run(args: argparse.Namespace) -> int:
     if args.scenes:
         scene_count = int(args.scenes)
     else:
-        # 需要 duration；如未从磁盘拿到则直接 probe（非常快，几毫秒）
         if duration_probe_s is None:
             duration_probe_s = probe_video(mp4_path).duration_s
+        # 每段目标 5-7 秒，最少 4 段、最多 20 段。上限抬到 20 是为了避免 100+ 秒视频
+        # 被压成 10 段导致单段过长（14-21s），narration 讲完后画面还静静地播很久。
         scene_count = max(4, min(20, round(duration_probe_s / 6)))
 
-    # ---- 费用预估 & dry-run ----
-    # 需要真实的 PDF 字符数才能给出靠谱估算 —— 抽一次文本是本地免费操作。
-    # 若已有 doc_content.json 且 --skip-parse 就复用；否则实抽一次（后续 Step 0 会 resume 掉）。
-    frame_count = args.frames
-    if args.skip_parse and doc_content_path.exists():
-        pdf_chars_actual = int(json.loads(
-            doc_content_path.read_text(encoding="utf-8")
-        )["pdf"]["char_count"])
+    # 抽帧数：未指定时按视频时长自动缩放，目标 ~7 秒 1 帧，最少 8 帧、最多 24 帧封顶。
+    # 帧越多，视觉大模型能看到的画面越细，narrator 就越少"脑补"，字幕和实际操作更容易对上。
+    if args.frames is not None:
+        frame_count = int(args.frames)
     else:
-        pdf_chars_actual = extract_pdf_text(pdf_path)["char_count"]
+        if duration_probe_s is None:
+            duration_probe_s = probe_video(mp4_path).duration_s
+        frame_count = max(8, min(24, round(duration_probe_s / 7)))
 
-    print(estimate_cost(scene_count, pdf_chars_actual, frame_count))
+    print(estimate_cost(scene_count, frame_count))
     if args.dry_run:
-        print(f"\n  (PDF 实抽字符数 {pdf_chars_actual}，视频时长 {duration_probe_s or '未探测'} s)")
+        if duration_probe_s is None:
+            duration_probe_s = probe_video(mp4_path).duration_s
+        print(f"\n  (视频时长 {duration_probe_s} s，目标 {scene_count} 段，抽 {frame_count} 帧)")
+        if args.frames is None:
+            print("  抽帧数按 duration / 7 自动算；想少花钱可加 --frames 8，想更精细可加 --frames 20")
         print("\n--dry-run 模式，仅估算未做任何 API 调用。")
         return 0
 
     api_key = required_env("AGENT_API_KEY", ENV_FILE)
 
     print("\n" + "=" * 60)
-    print("  「PDF + MP4 → 剪映视频」文档讲解流水线")
+    print("  「MP4 → 剪映视频」录屏讲解流水线（无 PDF）")
     print("=" * 60)
-    print(f"  pdf:            {pdf_path}")
     print(f"  mp4:            {mp4_path}")
+    print(f"  brief:          {args.brief or '(无)'}")
     print(f"  style:          {args.style}   ({style.get('description', '')})")
     print(f"  scenes:         {scene_count}    (frames={frame_count})")
     print(f"  output_dir:     {output_dir}")
@@ -327,21 +328,20 @@ def run(args: argparse.Namespace) -> int:
     print("=" * 60)
 
     logger.info(
-        "doc_video.start",
-        pdf=str(pdf_path), mp4=str(mp4_path), style=args.style,
+        "narration_video.start",
+        mp4=str(mp4_path), style=args.style,
         scene_count=scene_count, frame_count=frame_count,
         output_dir=str(output_dir),
     )
     t_start = time.time()
 
     try:
-        # ---- Step 0: PDF 抽文本 + 视频抽帧 ----
+        # ---- Step 0: 视频抽帧（无 PDF）----
         frames_dir = output_dir / "frames"
         if args.skip_parse and doc_content_path.exists():
             doc_content = load_doc_content(doc_content_path)
             logger.info("skip.doc_parse.reuse", path=str(doc_content_path))
         else:
-            pdf_result = extract_pdf_text(pdf_path, logger=logger)
             video_meta = probe_video(mp4_path, logger=logger)
             frame_paths = extract_frames(
                 mp4_path, frames_dir, n=frame_count,
@@ -352,17 +352,17 @@ def run(args: argparse.Namespace) -> int:
                 for i in range(frame_count)
             ]
             save_doc_content(
-                doc_content_path, pdf_result, video_meta, frame_paths, frame_timestamps,
+                doc_content_path, None, video_meta, frame_paths, frame_timestamps,
             )
             doc_content = load_doc_content(doc_content_path)
 
-        print(f"\n  [Step 0] PDF/视频解析完成 → {doc_content_path.name}")
+        print(f"\n  [Step 0] 视频解析完成 → {doc_content_path.name}")
 
-        # ---- 卡点 1：doc_content 概览 ----
+        # ---- 卡点 1：视频/帧概览 ----
         if not args.yes:
-            _preview_doc_content(doc_content)
+            _preview_video_content(doc_content)
             choice = _prompt_confirm(
-                "PDF 抽文本 + 视频抽帧结果是否 OK？（下一步调视觉大模型）",
+                "视频抽帧结果是否 OK？（下一步调视觉大模型）",
                 doc_content_path,
             )
             if choice == "n":
@@ -389,8 +389,8 @@ def run(args: argparse.Namespace) -> int:
                 print("\n  [Step 1] 已生成 frame_captions.json 骨架（含帧时间戳，caption 待填）。")
                 print(f"    请打开：{captions_path}")
                 print(f"    对照抽帧图：{frames_dir}")
-                print("    每帧 caption 填 20-50 字描述屏幕上在做什么，全部改完保存后运行：")
-                print("      python make_doc_video.py --pdf ... --mp4 ... "
+                print("    每帧 caption 填 20-50 字描述屏幕上在做什么，改完保存后运行：")
+                print("      python make_narration_video.py --mp4 ... "
                       "--resume-latest --skip-parse --skip-vision -y")
                 logger.info("pipeline.pause", stage="manual_captions_stub", path=str(captions_path))
                 return 0
@@ -398,12 +398,12 @@ def run(args: argparse.Namespace) -> int:
         else:
             frame_paths = [Path(f["path"]) for f in doc_content["frames"]]
             frame_timestamps = [float(f["timestamp_s"]) for f in doc_content["frames"]]
-            # 传 None：让 helpers.vision_chat 优先读 VISION_API_KEY / VISION_BASE_URL，
-            # 从而支持"文本 LLM 走 agent-plan、视觉走标准 Ark"的混合部署。
+            # narration 模式没有 PDF 背景；把 brief 当作简易上下文塞给视觉 prompt。
+            # 传 api_key=None：让 helpers.vision_chat 按 VISION_API_KEY → AGENT_API_KEY 顺序解析。
             frame_captions = caption_frames(
                 None,
                 frame_paths, frame_timestamps,
-                pdf_excerpt=doc_content["pdf"]["full_text"],
+                pdf_excerpt=(args.brief or ""),
                 output_dir=output_dir,
                 logger=logger,
             )
@@ -414,19 +414,19 @@ def run(args: argparse.Namespace) -> int:
         if frame_captions.get("video_summary"):
             print(f"    视频总结: {frame_captions['video_summary']}")
 
-        # ---- Step 2: 讲稿 + 切段时间戳 ----
+        # ---- Step 2: 讲稿 + 切段时间戳（无 PDF 版本） ----
         scenes_path = output_dir / "generated_scenes.json"
         if args.skip_llm and scenes_path.exists():
             scenes_data = load_generated_scenes(scenes_path)
             logger.info(
-                "skip.doc_narrator.reuse",
+                "skip.narration_narrator.reuse",
                 path=str(scenes_path),
                 count=len(scenes_data.get("scenes", [])),
             )
         else:
-            scenes_data = generate_doc_scenes(
+            scenes_data = generate_narration_scenes(
                 api_key,
-                doc_content, frame_captions,
+                doc_content["video"], frame_captions,
                 scene_count=scene_count,
                 brief=args.brief or "",
                 output_dir=output_dir,
@@ -476,6 +476,7 @@ def run(args: argparse.Namespace) -> int:
         tts_cfg = style.get("tts", {}) or {}
         audio_fmt = tts_cfg.get("format", "mp3")
         if args.skip_tts:
+            # 复用磁盘上的 audio/<scene_id>/NN.<fmt>，同时兼容旧目录（audio/<scene_id>.<fmt>）
             scene_audio_groups: list[dict] = []
             for s in scenes:
                 scene_dir = output_dir / "audio" / s["id"]
@@ -485,15 +486,22 @@ def run(args: argparse.Namespace) -> int:
                         raise SystemExit(f"--skip-tts 但 {scene_dir} 下没有音频")
                     from pipeline.helpers import smart_split as _split, strip_punctuation as _strip
                     raw_sentences = [_strip(x) or x for x in _split(s["narration"])]
+                    if len(sub_paths) != len(raw_sentences):
+                        logger.warn(
+                            "skip_tts.sentence_count_mismatch",
+                            scene_id=s["id"], mp3=len(sub_paths), sentences=len(raw_sentences),
+                        )
+                    sentence_records = [
+                        {"text": raw_sentences[i] if i < len(raw_sentences) else "",
+                         "audio_path": str(p)}
+                        for i, p in enumerate(sub_paths)
+                    ]
                     scene_audio_groups.append({
                         "id": s["id"], "narration": s["narration"],
-                        "sentences": [
-                            {"text": raw_sentences[i] if i < len(raw_sentences) else "",
-                             "audio_path": str(p)}
-                            for i, p in enumerate(sub_paths)
-                        ],
+                        "sentences": sentence_records,
                     })
                 else:
+                    # 兼容旧结构 audio/<scene_id>.mp3
                     legacy = output_dir / "audio" / f"{s['id']}.{audio_fmt}"
                     if not legacy.exists():
                         raise SystemExit(f"--skip-tts 但音频不存在: {scene_dir} 或 {legacy}")
@@ -520,7 +528,7 @@ def run(args: argparse.Namespace) -> int:
             draft_result = "(--skip-jianying)"
         else:
             draft_project_name = scenes_data.get("title") or project_slug
-            draft_result = _compose_jianying_draft_for_doc(
+            draft_result = _compose_jianying_draft_for_narration(
                 project_name=draft_project_name,
                 scenes=scenes,
                 clip_paths=clip_paths,
@@ -533,16 +541,16 @@ def run(args: argparse.Namespace) -> int:
         print(f"\n  [Step 5] 剪映草稿：\n    {draft_result}")
 
     except SystemExit:
-        logger.error("doc_video.failed")
+        logger.error("narration_video.failed")
         print("\n流水线中断 — 请检查上方错误信息与日志文件。")
         return 1
     except Exception as exc:
-        logger.error("doc_video.failed", error=str(exc))
+        logger.error("narration_video.failed", error=str(exc))
         print(f"\n流水线异常: {exc}")
         return 1
 
     elapsed = round(time.time() - t_start, 1)
-    logger.info("doc_video.done", elapsed_s=elapsed)
+    logger.info("narration_video.done", elapsed_s=elapsed)
 
     print("\n" + "=" * 60)
     print("  流水线完成")
@@ -560,15 +568,13 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="PDF + 本地 mp4 → 讲解视频剪映草稿：抽文本 → 视觉理解 → LLM 讲稿 → 切段 → 配音 → 剪映合成。",
+        description="本地 mp4 → 录屏讲解视频剪映草稿：抽帧 → 视觉理解 → LLM 讲稿 → 切段 → 配音 → 剪映合成（无需 PDF）。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--pdf", type=str, required=False,
-                        help="需求文档 PDF 路径（提供业务背景，需含文本层）")
     parser.add_argument("--mp4", type=str, required=False,
-                        help="要讲解的本地操作演示视频路径（mp4 / mov / m4v）")
+                        help="要讲解的本地视频（mp4 / mov / m4v）")
     parser.add_argument("--brief", type=str, default="",
-                        help="可选：给 LLM 的额外提示，例如「重点讲增值税差异核对流程」")
+                        help="可选：给 LLM 的背景提示，例如「讲讲这个 VSCode 插件怎么装」")
 
     styles = list_style_names() or ["documentary"]
     default_style = "documentary" if "documentary" in styles else styles[0]
@@ -576,8 +582,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"风格预设（默认 {default_style}）")
     parser.add_argument("--scenes", type=int, default=None,
                         help="场景/切段数量（默认按视频时长 / 6 自动算，夹到 4-10）")
-    parser.add_argument("--frames", type=int, default=8,
-                        help="送去视觉大模型的抽帧数量（默认 8）")
+    parser.add_argument("--frames", type=int, default=None,
+                        help="送去视觉大模型的抽帧数量；不填时按视频时长 / 7 自动算（8-24 之间）。帧越多越贵越准")
     parser.add_argument("--draft-folder", type=str, default=None,
                         help=f"剪映草稿目录（默认 {DEFAULT_DRAFT_FOLDER}）")
     parser.add_argument("--dry-run", action="store_true",
@@ -588,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-vision", action="store_true",
                         help="跳过 Step 1 视觉理解（复用 frame_captions.json）")
     parser.add_argument("--no-vision", action="store_true",
-                        help="不调用视觉大模型，直接写空 caption 让 doc_narrator 盲讲（省钱兜底）")
+                        help="不调用视觉大模型，直接写空 caption 让 narrator 盲讲（省钱兜底）")
     parser.add_argument("--manual-captions", action="store_true",
                         help="生成 frame_captions.json 骨架供你手填 caption 后 --skip-vision 续跑")
     parser.add_argument("--skip-llm", action="store_true",
@@ -608,7 +614,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="指定输出目录（一般用于续跑）")
     parser.add_argument("--resume-latest", action="store_true",
-                        help="复用该 PDF 最近一次 run 目录（与 --output-dir 互斥）")
+                        help="复用该视频最近一次 run 目录（与 --output-dir 互斥）")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="关闭交互卡点，直接一路跑到底")
     return parser
@@ -618,8 +624,8 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    if not args.pdf or not args.mp4:
-        parser.error("--pdf 和 --mp4 都是必填参数")
+    if not args.mp4:
+        parser.error("--mp4 是必填参数")
 
     return run(args)
 

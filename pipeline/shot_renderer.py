@@ -463,7 +463,13 @@ class ShotRenderer:
             output=output_mp4.name,
             skip_ms=skip_ms,
         )
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if result.returncode != 0:
             raise SystemExit(
                 f"ffmpeg 转码失败（{output_mp4.name}）：\n"

@@ -53,22 +53,9 @@ _smart_separators = re.compile(r'([，。！,!?；：:、\n])')
 
 
 def smart_split(text: str) -> list[str]:
-    parts = _smart_separators.split(text)
-    sentences: list[str] = []
-    buf = ""
-    for part in parts:
-        if _smart_separators.fullmatch(part):
-            buf += part
-            if buf.strip():
-                sentences.append(buf)
-            buf = ""
-        else:
-            buf += part
-    if buf.strip():
-        sentences.append(buf.strip())
-    if not sentences:
-        sentences = [text]
-    return sentences
+    """已迁移至 pipeline.helpers.smart_split；此处保留代理以兼容老调用。"""
+    from pipeline.helpers import smart_split as _shared
+    return _shared(text)
 
 
 def is_image_file(path: str) -> bool:
@@ -165,10 +152,22 @@ del _ci
 
 
 @dataclass
+class SentenceInfo:
+    """一段 narration 内部的一个子句（对应一个独立 TTS mp3）。
+
+    提供 SentenceInfo 列表给 SegmentInfo.sentences 后，draft_composer 会用**每个子句
+    真实的 audio_duration** 精确对齐字幕，而不是靠字符比例估算。
+    """
+    text: str        # 已去除尾部标点的干净字幕文本
+    audio_path: str  # 该子句独立合成出来的 mp3 路径
+
+
+@dataclass
 class SegmentInfo:
     subtitle: str
     audio_path: str
     media_path: str
+    sentences: list[SentenceInfo] | None = None   # 有值时启用逐句同步
 
 
 @dataclass
@@ -260,9 +259,20 @@ class JianyingDraftBuilder:
 
         # 检查素材文件
         for i, seg in enumerate(segments, start=1):
-            for label, path in [("音频", seg.audio_path), ("媒体", seg.media_path)]:
-                if not os.path.exists(path):
-                    report.missing_files.append(f"segments[{i}].{label}: {path}")
+            # 视频/图片素材永远要检查
+            if not os.path.exists(seg.media_path):
+                report.missing_files.append(f"segments[{i}].媒体: {seg.media_path}")
+
+            # 音频：若有逐句列表，检查每一句；否则检查单条 audio_path
+            if seg.sentences:
+                for j, s in enumerate(seg.sentences):
+                    if not os.path.exists(s.audio_path):
+                        report.missing_files.append(
+                            f"segments[{i}].sentences[{j}]: {s.audio_path}"
+                        )
+            else:
+                if not os.path.exists(seg.audio_path):
+                    report.missing_files.append(f"segments[{i}].音频: {seg.audio_path}")
 
         if report.missing_files:
             report.errors.append(f"缺少 {len(report.missing_files)} 个文件")
@@ -360,32 +370,86 @@ class JianyingDraftBuilder:
             base_pct = 15 + int(75 * i / total_segments)
             self._progress(f"处理片段 {i + 1}/{total_segments}", base_pct)
 
-            audio_material = draft.AudioMaterial(seg.audio_path)
-            audio_duration = audio_material.duration
+            # ---- 音频总时长 ----
+            # 若 seg.sentences 有值：一段 narration 被拆成多个子句、每个子句一个独立 mp3。
+            #   总音频时长 = Σ 子句时长；后续会**逐句**加进音频轨与字幕轨，字幕严格对齐 TTS 真实节奏。
+            # 否则走老路径：整段 narration 一个 mp3、字幕靠字符比例估算。
+            if seg.sentences:
+                sentence_materials = [
+                    draft.AudioMaterial(s.audio_path) for s in seg.sentences
+                ]
+                sentence_durations = [am.duration for am in sentence_materials]
+                audio_duration = sum(sentence_durations)
+            else:
+                sentence_materials = None
+                sentence_durations = None
+                audio_material = draft.AudioMaterial(seg.audio_path)
+                audio_duration = audio_material.duration
 
             # ---- 决定这一段在时间线上的总长 ----
-            # preserve_video_duration 模式：视频段用它的原始时长；音频从段起点开始播、讲完静音。
-            # 目的是不裁剪原 mp4（想让"演示视频完整保留"的场景）。
+            # preserve_video_duration 模式：优先保 TTS 讲解完整；视频段用它的原始时长；
+            # 仅当 TTS 比视频段长时，才把该段视频**微微放慢**匹配 TTS，避免把讲解截掉。
             is_img = is_image_file(seg.media_path)
             if self.preserve_video_duration and not is_img:
                 vm = draft.VideoMaterial(seg.media_path)
-                scene_duration = vm.duration
-                audio_time_range = trange(current_time, audio_duration)
+                video_duration = vm.duration
+
+                if audio_duration <= video_duration:
+                    # 常见路径：TTS ≤ 视频段，视频保持原速原时长，音频讲完静音
+                    scene_duration = video_duration
+                    speed = 1.0
+                else:
+                    # 兜底：TTS 讲得比视频段还长（narrator 偶尔写多字），
+                    # 把视频放慢到匹配 TTS 时长，讲解完整不被截；成片会略长于原 mp4。
+                    scene_duration = audio_duration
+                    speed = video_duration / audio_duration   # < 1，视频慢放
+                    slowdown_pct = round((1 - speed) * 100, 1)
+                    self._progress(
+                        f"⚠ 片段 {i + 1}: TTS {audio_duration/1_000_000:.2f}s > 视频段 "
+                        f"{video_duration/1_000_000:.2f}s，视频慢放 {slowdown_pct}% 匹配 TTS，"
+                        f"讲解将完整保留",
+                        base_pct,
+                    )
+
                 video_time_range = trange(current_time, scene_duration)
-                # 视频原速原时长，不动 speed/crop
-                media_seg = draft.VideoSegment(
-                    seg.media_path, video_time_range,
-                    **({"volume": 0.0} if self.mute_original_video else {}),
-                )
-                # 音频照旧只占 audio_duration
-                script.add_segment(draft.AudioSegment(seg.audio_path, audio_time_range), "音频轨道")
+
+                vs_kwargs: dict[str, Any] = {}
+                if speed != 1.0:
+                    vs_kwargs["speed"] = speed
+                if self.mute_original_video:
+                    vs_kwargs["volume"] = 0.0
+                media_seg = draft.VideoSegment(seg.media_path, video_time_range, **vs_kwargs)
+
+                # 音频入轨：逐句 or 单段
+                if sentence_materials is not None:
+                    sub_offset = current_time
+                    for s_info, s_dur in zip(seg.sentences, sentence_durations):
+                        script.add_segment(
+                            draft.AudioSegment(s_info.audio_path, trange(sub_offset, s_dur)),
+                            "音频轨道",
+                        )
+                        sub_offset += s_dur
+                else:
+                    script.add_segment(
+                        draft.AudioSegment(seg.audio_path, trange(current_time, audio_duration)),
+                        "音频轨道",
+                    )
                 add_movement = self.add_video_movement
-                time_range = video_time_range  # 供下游字幕/位移/转场计算使用
+                time_range = video_time_range  # 供下游位移/转场计算使用
             else:
                 time_range = trange(current_time, audio_duration)
                 scene_duration = audio_duration
-                # 音频
-                script.add_segment(draft.AudioSegment(seg.audio_path, time_range), "音频轨道")
+                # 音频入轨：逐句 or 单段
+                if sentence_materials is not None:
+                    sub_offset = current_time
+                    for s_info, s_dur in zip(seg.sentences, sentence_durations):
+                        script.add_segment(
+                            draft.AudioSegment(s_info.audio_path, trange(sub_offset, s_dur)),
+                            "音频轨道",
+                        )
+                        sub_offset += s_dur
+                else:
+                    script.add_segment(draft.AudioSegment(seg.audio_path, time_range), "音频轨道")
 
                 # 媒体
                 if is_img:
@@ -436,8 +500,19 @@ class JianyingDraftBuilder:
                 script.add_segment(previous_media_seg, "媒体轨道")
             previous_media_seg = media_seg
 
-            # 字幕
-            if self.split_subtitles:
+            # ---- 字幕入轨 ----
+            # 若逐句结构可用：每句用 **该子句真实 audio_duration** 精确对齐；
+            # 否则退回按字符比例估算的老逻辑。
+            if sentence_materials is not None:
+                sub_offset = current_time
+                for s_info, s_dur in zip(seg.sentences, sentence_durations):
+                    txt = s_info.text.strip() or _smart_separators.sub('', s_info.text).strip()
+                    text_seg = draft.TextSegment(
+                        txt, trange(sub_offset, s_dur), **subtitle_kwargs,
+                    )
+                    script.add_segment(text_seg, "字幕轨道")
+                    sub_offset += s_dur
+            elif self.split_subtitles:
                 sentences = smart_split(seg.subtitle)
                 total_len = max(len(seg.subtitle), 1)
                 sub_time = current_time

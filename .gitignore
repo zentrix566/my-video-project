@@ -1,13 +1,47 @@
-.venv/
-env/
+# ==== Python ====
 __pycache__/
 *.pyc
-.env
-outputs/projects/
-outputs/code_walks/
-outputs/doc_videos/
-outputs/logs/
-outputs/blur_cache/
+*.pyo
+*.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# ==== 虚拟环境 ====
+.venv/
+env/
+venv/
+
+# ==== 密钥与本地配置（示例文件保留） ====
+.env
+.env.local
+*.local.env
+
+# ==== 流水线产物（所有 outputs 子目录都不入库） ====
+# 主流水线中间产物、剪映草稿中间态、模糊缓存、结构化日志等，全部按需重生成
+outputs/
+
+# ==== IDE / 编辑器 ====
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ==== 日志 ====
+*.log
+
+# ==== 操作系统 ====
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# ==== 大素材（走本地路径，别提交到仓库） ====
+*.mp4
+*.mov
+*.m4v
+*.mp3
+*.wav

@@ -90,7 +90,13 @@ def cut_clips(
             start_s=round(start_s, 2),
             duration_s=round(end_s - start_s, 2),
         )
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if result.returncode != 0 or not out_path.exists():
             raise SystemExit(
                 f"ffmpeg 切段失败（{scene_id}）：\n"

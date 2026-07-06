@@ -49,7 +49,11 @@ SYSTEM_PROMPT_DOC_NARRATOR = """你是一位专业的企业内训短视频编剧
 ## 写作要求
 
 - 恰好产出 target_scene_count 个 scene；scene 数量、id 序号、时间段都必须严格遵守。
-- 每段 narration 用**中文**，**必须 25-35 字**（TTS 语速约 5 字/秒，35 字≈7 秒，正好匹配一段视频）。
+- 每段 narration 用**中文**，字数**严格**满足两条约束：
+  1. **下限**：`字数 ≥ (video_end_s - video_start_s) × 4.5 × 0.85`（填满 85% 段时长，避免讲完后画面还静静地播很久）
+  2. **上限**：`字数 ≤ (video_end_s - video_start_s) × 4.5`（TTS 语速约 5 字/秒，留 10% 余量避免尾巴讲不完）
+  举例：视频段 6 秒 → 目标 [23, 27] 字；10 秒 → [38, 45] 字；15 秒 → [57, 67] 字。
+  **长段（>12 秒）必须写长 narration**，可以多讲这一步涉及的**PDF 术语 / 业务字段 / 流程约束**，绝不能敷衍写 30 字。
 - narration 目标读者：**没读过 PDF 的同事/客户**。既要说清楚屏幕上在做什么操作，又要点出这个操作背后的业务意义（比如「同步销项发票是为了让开票系统和申报表口径一致，避免申报后出现差异」）。
 - **严格禁用**「大家好」「点赞关注」「接下来我们看」「下一段」「首先」「其次」「最后」这类衔接/主播套话——每段之间靠视频自然衔接。
 - 允许直接引用 PDF 里的**关键术语/字段名/流程名**（如「销项发票核对」「未开票收入」「留抵税额」等），但不要照抄大段 PDF 原文。
@@ -144,6 +148,11 @@ def generate_doc_scenes(
                     {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
                 ],
                 "temperature": 0.6,
+                # 关掉思考模式 + 抬高 max_tokens：写结构化 JSON 讲稿不需要 chain-of-thought，
+                # 否则 ark-code-latest 会把整个 4096 max_tokens 塞进 reasoning_content
+                # 导致最终 content 为空、下游 JSON 解析报 "Expecting value"。
+                "thinking": {"type": "disabled"},
+                "max_tokens": 8192,
             },
             timeout=300,
         )
