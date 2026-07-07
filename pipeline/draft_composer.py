@@ -456,15 +456,19 @@ class JianyingDraftBuilder:
                 if sentence_materials is not None:
                     # 计算每句在段内的时长比例
                     total_audio = sum(sentence_durations)  # μs
-                    total_segment_time = max(scene_duration, total_audio)  # μs
+                    # 音频总目标时长 = scene_duration（=video_duration（speed_audio）或 audio_duration（slow_video回退））
+                    total_segment_time = scene_duration
                     sub_offset = current_time
                     for idx, (s_info, s_dur) in enumerate(zip(seg.sentences, sentence_durations)):
+                        remaining = (current_time + scene_duration) - sub_offset
+                        if remaining <= 0:
+                            break  # 已超出段边界，不再放置更多音频
                         if idx < len(seg.sentences) - 1:
                             ratio = s_dur / max(total_audio, 1)
-                            target_dur = int(round(total_segment_time * ratio))
+                            target_dur = min(remaining, max(1, int(round(total_segment_time * ratio))))
                         else:
-                            # 最后一句兜底：从 sub_offset 到 current_time + scene_duration 的剩余
-                            target_dur = max(1, (current_time + scene_duration) - sub_offset)
+                            # 最后一句：精确填充剩下的时间
+                            target_dur = remaining
                         script.add_segment(
                             draft.AudioSegment(
                                 s_info.audio_path,
@@ -561,14 +565,17 @@ class JianyingDraftBuilder:
             if sentence_materials is not None:
                 sub_offset = current_time
                 total_audio = sum(sentence_durations)
-                total_seg_us = max(scene_duration, total_audio)
+                scene_end = current_time + scene_duration
                 for idx, (s_info, s_dur) in enumerate(zip(seg.sentences, sentence_durations)):
+                    remaining = scene_end - sub_offset
+                    if remaining <= 0:
+                        break
                     txt = s_info.text.strip() or _smart_separators.sub('', s_info.text).strip()
                     if idx < len(seg.sentences) - 1:
                         ratio = s_dur / max(total_audio, 1)
-                        text_dur = max(1, int(round(total_seg_us * ratio)))
+                        text_dur = min(remaining, max(1, int(round(scene_duration * ratio))))
                     else:
-                        text_dur = max(1, (current_time + scene_duration) - sub_offset)
+                        text_dur = remaining
                     text_seg = draft.TextSegment(
                         txt, trange(sub_offset, text_dur), **subtitle_kwargs,
                     )
