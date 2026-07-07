@@ -73,7 +73,7 @@
 python make_video.py --topic "南明李定国"
 ```
 
-跑完在 `D:/Program Files/JianyingPro Drafts/南明李定国_<时间戳>/` 里出现一个新草稿，包含图片轨、配音轨、字幕轨、运镜与叠化转场。
+跑完在 `D:/software/JianyingPro Drafts/南明李定国_<时间戳>/` 里出现一个新草稿，包含图片轨、配音轨、字幕轨、运镜与叠化转场。
 
 ---
 
@@ -130,7 +130,7 @@ my-video-project/
     └── salvage_last_step0.py     # LLM JSON 崩坏时的救援脚本
 ```
 
-剪映草稿输出到 `D:/Program Files/JianyingPro Drafts/`（可通过 `--draft-folder` 覆盖）。
+剪映草稿输出到 `D:/software/JianyingPro Drafts/`（可通过 `--draft-folder` 覆盖）。
 
 ---
 
@@ -260,7 +260,7 @@ copy ..\test-agent-plan\.env .env
     │  Step 2    pipeline.image_gen        → outputs/projects/<slug>/<ts>/images/*.png
     │  Step 3    pipeline.tts              → outputs/projects/<slug>/<ts>/audio/*.mp3
     ▼
-Step 4  pipeline.draft_composer    → D:/Program Files/JianyingPro Drafts/<slug>_<ts>/
+Step 4  pipeline.draft_composer    → D:/software/JianyingPro Drafts/<slug>_<ts>/
                                      直接打开剪映即可看到时间线
 ```
 
@@ -378,6 +378,16 @@ C:/Users/EDY/Pictures/2026-06/
 
 ### 三、按序号取图做梗图剪映草稿：`make_meme_video.py`
 
+**筛图阈值约定**：`make_meme_video.py` 的输入目录默认约定是"手动筛过的可用池"（即经过 `curate_photos.py` 自动分类或 `curate_manual.py` 人工过图后放入 `可用/` 的图），因此默认阈值**非常宽松**（只挡真正的缩略图垃圾和极窄/极宽图）：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--min-dim` | 200 | 最短边最小像素，默认只挡 <200px 的垃圾缩略图 |
+| `--min-ratio` | 0.3 | 最小宽高比，默认允许 1:3.3 的手机长截图 |
+| `--max-ratio` | 3.0 | 最大宽高比，默认允许 3:1 的宽幅横图 |
+
+如果是**直接把整片相册（未筛）喂进来**，加 `--strict-filter` 一键切回严格阈值（400 / 0.5 / 2.5），自动剔除太小/太窄/太宽的图。三个阈值也可以单独覆盖，例如 `--min-dim 500`。
+
 ```bash
 # 取 001–020 张，contain 模式（图片完整显示，宽高比不匹配时留边）
 .\.venv\Scripts\python make_meme_video.py --source "C:/Users/EDY/Pictures/2026-06/可用" --range 1-20
@@ -412,6 +422,10 @@ C:/Users/EDY/Pictures/2026-06/
 .\.venv\Scripts\python make_meme_video.py --source "..." \
     --seconds 7 --auto-count --bgm "..." --use-ledger
 
+# 未筛过的相册直接喂入：加 --strict-filter 启用严格阈值
+.\.venv\Scripts\python make_meme_video.py --source "C:/Users/EDY/Pictures/2026-06" \
+    --strict-filter --recursive --count 30
+
 # 只做筛图预览、不写草稿
 .\.venv\Scripts\python make_meme_video.py --source "..." --scan-only
 ```
@@ -439,6 +453,8 @@ C:/Users/EDY/Pictures/2026-06/
 ```bash
 .\.venv\Scripts\python make_meme_video.py --auto
 ```
+
+> **BGM 在哪里？** `--auto` 会自动去 `%LOCALAPPDATA%/JianyingPro/User Data/Cache/music/` 找剪映最新下载的 mp3（文件名是 md5 hash，不能直接看出是哪首；文件按 mtime 倒序，最新的就是最近在剪映音乐库里点下载/试听的那首）。**注意**：剪映会不定期清理这个缓存目录，长期要用的 BGM 建议拷贝到自己的音乐目录（如 `D:/Music/`）再用 `--bgm` 指向。
 
 **分步版**：
 

@@ -20,7 +20,8 @@ from PIL import Image, ImageFilter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CACHE_DIR = PROJECT_ROOT / "outputs" / "blur_cache"
+# 缓存目录跟随 pipeline.paths.OUTPUTS_ROOT；改 .env 里 OUTPUTS_ROOT 会同步搬走缓存
+from pipeline.paths import BLUR_CACHE_DIR as DEFAULT_CACHE_DIR
 
 # 高斯模糊半径。半径越大越糊，30 大约相当于抖音那种"看不出主体、只留色块氛围"的效果
 DEFAULT_BLUR_RADIUS = 30

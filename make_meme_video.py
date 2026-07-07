@@ -36,8 +36,17 @@ from pipeline.meme_composer import compose_meme_draft
 
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_LOG_DIR = ROOT / "outputs" / "logs"
-DEFAULT_DRAFT_FOLDER = "D:/Program Files/JianyingPro Drafts"
+# 路径默认值集中在 pipeline.paths；换机器只改 .env 里的 JIANYING_DRAFT_FOLDER / OUTPUTS_ROOT
+from pipeline.paths import (
+    JIANYING_DRAFT_FOLDER as DEFAULT_DRAFT_FOLDER,
+    LOG_DIR as DEFAULT_LOG_DIR,
+)
+
+# —— 筛图阈值 ——
+# 宽松默认（LOOSE）：输入目录约定是手动筛过的"可用"，默认只挡真正的缩略图垃圾 / 极窄极宽图。
+# 严格模式（STRICT）给"想让工具帮我把关"的场景（比如从整片相册直接喂），用 --strict-filter 一键切回。
+LOOSE_MIN_DIM, LOOSE_MIN_RATIO, LOOSE_MAX_RATIO = 200, 0.3, 3.0
+STRICT_MIN_DIM, STRICT_MIN_RATIO, STRICT_MAX_RATIO = 400, 0.5, 2.5
 
 
 # ---------------------------------------------------------------------
@@ -241,6 +250,18 @@ def run(args: argparse.Namespace) -> int:
         ledger.save()
         print(f"账本已清空（原有 {n} 条已用记录）")
         # 不 return —— 允许 --reset-ledger 与本次挑图串联
+
+    # --strict-filter：切回早期严格阈值（默认已放宽，因为约定输入目录是手动筛过的"可用"）
+    if args.strict_filter:
+        # 用户没显式设阈值时才覆盖；显式设过的尊重用户
+        if args.min_dim == LOOSE_MIN_DIM:
+            args.min_dim = STRICT_MIN_DIM
+        if args.min_ratio == LOOSE_MIN_RATIO:
+            args.min_ratio = STRICT_MIN_RATIO
+        if args.max_ratio == LOOSE_MAX_RATIO:
+            args.max_ratio = STRICT_MAX_RATIO
+        print("  [strict-filter] 使用严格阈值："
+              f"min-dim={args.min_dim}, min-ratio={args.min_ratio}, max-ratio={args.max_ratio}")
 
     result = curate_directory(
         source,
@@ -453,12 +474,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="以 --seconds 为每张目标秒数，自动算需要几张图让视频 = BGM 时长 "
                              "（等价于 --fit-to-bgm，但张数自动，你只管定节奏）")
 
-    parser.add_argument("--min-dim", type=int, default=400,
-                        help="判定 usable 的最小边长（默认 400）")
-    parser.add_argument("--min-ratio", type=float, default=0.5,
-                        help="判定 usable 的最小宽高比（默认 0.5，超窄剔除）")
-    parser.add_argument("--max-ratio", type=float, default=2.5,
-                        help="判定 usable 的最大宽高比（默认 2.5，超宽剔除）")
+    parser.add_argument("--min-dim", type=int, default=LOOSE_MIN_DIM,
+                        help=f"判定 usable 的最小边长（默认 {LOOSE_MIN_DIM}，只挡真正缩略图；"
+                             f"想严格把关用 --strict-filter）")
+    parser.add_argument("--min-ratio", type=float, default=LOOSE_MIN_RATIO,
+                        help=f"判定 usable 的最小宽高比（默认 {LOOSE_MIN_RATIO}，允许长截图；"
+                             f"--strict-filter 时为 {STRICT_MIN_RATIO}）")
+    parser.add_argument("--max-ratio", type=float, default=LOOSE_MAX_RATIO,
+                        help=f"判定 usable 的最大宽高比（默认 {LOOSE_MAX_RATIO}，允许宽幅横图；"
+                             f"--strict-filter 时为 {STRICT_MAX_RATIO}）")
+    parser.add_argument("--strict-filter", action="store_true",
+                        help="启用严格筛选阈值（min-dim=400 / min-ratio=0.5 / max-ratio=2.5），"
+                             "适合把未手动筛过的整片相册直接喂入时使用")
     parser.add_argument("--recursive", action="store_true",
                         help="递归扫描 --source 下的子目录")
     parser.add_argument("--list-rejected", type=int, default=10,

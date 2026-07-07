@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -29,7 +30,7 @@ from pipeline.helpers import (
 )
 from pipeline.styles import list_style_names, load_style
 from pipeline.doc_parse import (
-    extract_pdf_text, probe_video, extract_frames,
+    extract_pdf_text, probe_video, extract_frames, detect_scene_changes,
     save_doc_content, load_doc_content,
 )
 from pipeline.video_understand import (
@@ -44,9 +45,12 @@ from pipeline.camera import CAMERA_PRESETS
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
-DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "doc_videos"
-DEFAULT_LOG_DIR = ROOT / "outputs" / "logs"
-DEFAULT_DRAFT_FOLDER = "D:/Program Files/JianyingPro Drafts"
+# 路径默认值集中在 pipeline.paths；换机器只改 .env 里的 JIANYING_DRAFT_FOLDER / OUTPUTS_ROOT
+from pipeline.paths import (
+    JIANYING_DRAFT_FOLDER as DEFAULT_DRAFT_FOLDER,
+    LOG_DIR as DEFAULT_LOG_DIR,
+    DOC_VIDEO_DIR as DEFAULT_OUTPUT_ROOT,
+)
 
 
 # ============================================================
@@ -122,7 +126,7 @@ def estimate_cost(scene_count: int, pdf_chars: int, frame_count: int) -> str:
     """PDF + mp4 流水线预估：doc_parse 0 元 + 视觉 LLM + 文本 LLM + TTS。"""
     # 参考单价（元 / 千 token；实际以火山账单为准）
     _LLM_TEXT_PER_KTOKEN = 0.008        # ark-code-latest
-    _LLM_VISION_PER_KTOKEN = 0.015      # doubao-seed-1.6-flash（含图片 token）
+    _LLM_VISION_PER_KTOKEN = 0.015      # 视觉模型单价（随模型浮动；doubao-seed-2-1-pro 可能更高，供量级参考）
     _TTS_PER_CHAR = 0.0001              # seed-tts-2.0
     _IMAGE_TOKENS_EACH = 1500           # 720p 单帧粗估
 
@@ -162,24 +166,26 @@ def estimate_cost(scene_count: int, pdf_chars: int, frame_count: int) -> str:
 # ============================================================
 
 def _compose_jianying_draft_for_doc(
+    *,
     project_name: str,
     scenes: list[dict[str, Any]],
     clip_paths: list[str],
     scene_audio_groups: list[dict],
     style: dict[str, Any],
     logger: PipelineLogger,
-    *,
     draft_folder_path: str,
     fade_transition: bool = True,
+    tts_overshoot: str = "speed_audio",
 ) -> str:
-    """文档讲解模式专用合成函数。
+    """组装 doc_video 的剪映草稿。
 
     与 make_video.py 里的 compose_jianying_draft 相比差别：
-        1. preserve_video_duration=True —— 视频段保留原时长，讲解讲完就静音、画面继续播。
-           这样最终成片时长 = 原 mp4 时长，不会因为 TTS 短于视频段而被裁掉尾巴。
+        1. preserve_video_duration=True —— 视频段保留原时长（默认 speed_audio 策略下视频原速，
+           TTS 超出时音频加速卡进视频段；选 slow_video 时回退旧行为）。
         2. add_image_movement / add_video_movement 全关 —— 原 mp4 已经有内容变化，不需要额外运镜。
-        3. 逐句 TTS —— 每段 narration 按标点切成子句、每句独立合成，用真实音频时长驱动字幕，
-           彻底消除按字符比例估算字幕时长带来的漂移。
+        3. 逐句 TTS —— 每段 narration 按 LLM 给的 sentences 逐句合成（或按标点兜底），
+           用真实音频时长驱动字幕，消除按字符比例估算的漂移；LLM 给的 target_duration_us
+           作为字幕时间窗比例参考。
     """
     jianying_cfg = style.get("jianying", {}) or {}
 
@@ -202,6 +208,7 @@ def _compose_jianying_draft_for_doc(
         subtitle_preset=jianying_cfg.get("subtitle_preset"),
         transition_duration=jianying_cfg.get("transition_duration", "0.4s"),
         preserve_video_duration=True,
+        tts_overshoot=tts_overshoot,
     )
 
     segments: list[SegmentInfo] = []
@@ -293,12 +300,31 @@ def run(args: argparse.Namespace) -> int:
         # 需要 duration；如未从磁盘拿到则直接 probe（非常快，几毫秒）
         if duration_probe_s is None:
             duration_probe_s = probe_video(mp4_path).duration_s
-        scene_count = max(4, min(20, round(duration_probe_s / 6)))
+        scene_count = max(4, min(20, round(duration_probe_s / 5)))  # 每段 ~5 秒（配合镜头检测）
+
+    # ---- 视觉模型解析 ----
+    if args.vision_model == "pro":
+        vision_model = os.environ.get("VISION_MODEL_PRO") or os.environ.get("VISION_MODEL")
+        if not vision_model or vision_model == os.environ.get("VISION_MODEL_PRO", "") == "":
+            print("  [!] --vision-model pro 但 VISION_MODEL_PRO 未配置，回退到 VISION_MODEL")
+            vision_model = os.environ.get("VISION_MODEL")
+    else:
+        vision_model = os.environ.get("VISION_MODEL")
+
+    # ---- 帧数量：优先 --frames，否则按 frame_interval 估算 ----
+    if args.frames:
+        frame_count = int(args.frames)
+    else:
+        # 需要时长
+        if duration_probe_s is None:
+            duration_probe_s = probe_video(mp4_path).duration_s
+        import math
+        # 按 interval 均匀抽（镜头切换点会额外加密抽帧，实际总帧数可能略多）
+        frame_count = max(6, math.ceil(duration_probe_s / args.frame_interval))
 
     # ---- 费用预估 & dry-run ----
     # 需要真实的 PDF 字符数才能给出靠谱估算 —— 抽一次文本是本地免费操作。
     # 若已有 doc_content.json 且 --skip-parse 就复用；否则实抽一次（后续 Step 0 会 resume 掉）。
-    frame_count = args.frames
     if args.skip_parse and doc_content_path.exists():
         pdf_chars_actual = int(json.loads(
             doc_content_path.read_text(encoding="utf-8")
@@ -340,19 +366,37 @@ def run(args: argparse.Namespace) -> int:
         if args.skip_parse and doc_content_path.exists():
             doc_content = load_doc_content(doc_content_path)
             logger.info("skip.doc_parse.reuse", path=str(doc_content_path))
+            # 兼容旧 doc_content.json：补齐 scene_changes / is_scene_change
+            if "scene_changes" not in doc_content:
+                doc_content["scene_changes"] = []
+            for f in doc_content.get("frames", []):
+                f.setdefault("is_scene_change", False)
         else:
             pdf_result = extract_pdf_text(pdf_path, logger=logger)
             video_meta = probe_video(mp4_path, logger=logger)
-            frame_paths = extract_frames(
-                mp4_path, frames_dir, n=frame_count,
+
+            # 镜头切换检测（除非 --no-scene-detect）
+            if args.no_scene_detect:
+                scene_changes: list[float] = []
+                print("  [Step 0] 已关闭镜头切换检测，使用纯均匀抽帧")
+            else:
+                scene_changes = detect_scene_changes(
+                    mp4_path, threshold=args.scene_threshold, logger=logger,
+                )
+                print(f"  [Step 0] 检测到 {len(scene_changes)} 个镜头切换点")
+
+            frame_result = extract_frames(
+                mp4_path, frames_dir,
+                n=frame_count,
                 duration_s=video_meta.duration_s, logger=logger,
+                frame_interval_s=None if args.frames else args.frame_interval,
+                scene_changes=scene_changes if scene_changes else None,
             )
-            frame_timestamps = [
-                video_meta.duration_s * (i + 0.5) / frame_count
-                for i in range(frame_count)
-            ]
+            frame_paths = frame_result.paths
+            frame_timestamps = frame_result.timestamps
+            is_scene_change = frame_result.is_scene_change
             save_doc_content(
-                doc_content_path, pdf_result, video_meta, frame_paths, frame_timestamps,
+                doc_content_path, pdf_result, video_meta, frame_result,
             )
             doc_content = load_doc_content(doc_content_path)
 
@@ -398,14 +442,18 @@ def run(args: argparse.Namespace) -> int:
         else:
             frame_paths = [Path(f["path"]) for f in doc_content["frames"]]
             frame_timestamps = [float(f["timestamp_s"]) for f in doc_content["frames"]]
-            # 传 None：让 helpers.vision_chat 优先读 VISION_API_KEY / VISION_BASE_URL，
-            # 从而支持"文本 LLM 走 agent-plan、视觉走标准 Ark"的混合部署。
+            is_scene_arr = [bool(f.get("is_scene_change")) for f in doc_content["frames"]]
+            # 视觉模型：None=让 caption_frames 走 env 默认；显式值优先
             frame_captions = caption_frames(
                 None,
                 frame_paths, frame_timestamps,
                 pdf_excerpt=doc_content["pdf"]["full_text"],
                 output_dir=output_dir,
                 logger=logger,
+                model=vision_model,
+                is_scene_change=is_scene_arr,
+                context_label="PDF 摘录",
+                role_label="软件产品分析师",
             )
         print(
             f"\n  [Step 1] 视觉理解完成 → {captions_path.name}"
@@ -431,6 +479,7 @@ def run(args: argparse.Namespace) -> int:
                 brief=args.brief or "",
                 output_dir=output_dir,
                 logger=logger,
+                scene_changes=doc_content.get("scene_changes") or [],
             )
         scenes: list[dict[str, Any]] = scenes_data["scenes"]
         print(f"\n  [Step 2] 讲稿 + 切段 {len(scenes)} 段已就绪 → {scenes_path.name}")
@@ -529,6 +578,7 @@ def run(args: argparse.Namespace) -> int:
                 logger=logger,
                 draft_folder_path=draft_folder_path,
                 fade_transition=not args.no_fade,
+                tts_overshoot=args.tts_overshoot,
             )
         print(f"\n  [Step 5] 剪映草稿：\n    {draft_result}")
 
@@ -576,8 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"风格预设（默认 {default_style}）")
     parser.add_argument("--scenes", type=int, default=None,
                         help="场景/切段数量（默认按视频时长 / 6 自动算，夹到 4-10）")
-    parser.add_argument("--frames", type=int, default=8,
-                        help="送去视觉大模型的抽帧数量（默认 8）")
+    parser.add_argument("--frames", type=int, default=None,
+                        help="送去视觉大模型的抽帧数量（默认按 --frame-interval 自动算）")
     parser.add_argument("--draft-folder", type=str, default=None,
                         help=f"剪映草稿目录（默认 {DEFAULT_DRAFT_FOLDER}）")
     parser.add_argument("--dry-run", action="store_true",
@@ -605,6 +655,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-resume", action="store_true",
                         help="禁用切段/配音的断点续跑（已存在文件也重跑）")
     parser.add_argument("--no-fade", action="store_true", help="禁用片段转场")
+    parser.add_argument("--vision-model", type=str, default="auto",
+                        choices=["auto", "pro"],
+                        help="视觉模型选择：auto=用 VISION_MODEL（默认），pro=用 VISION_MODEL_PRO 更强但更贵")
+    parser.add_argument("--frame-interval", type=float, default=2.0,
+                        help="均匀抽帧间隔秒数（默认 2.0；--frames 指定时优先用 --frames 的张数）")
+    parser.add_argument("--scene-threshold", type=float, default=0.4,
+                        help="镜头切换检测阈值 0-1，越小越敏感（默认 0.4）")
+    parser.add_argument("--no-scene-detect", action="store_true",
+                        help="关闭镜头切换检测（回退到纯均匀抽帧）")
+    parser.add_argument("--tts-overshoot", type=str, default="speed_audio",
+                        choices=["speed_audio", "slow_video"],
+                        help="TTS 超长时处理：speed_audio=加速音频保视频原速（默认），slow_video=旧行为慢放视频")
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="指定输出目录（一般用于续跑）")
     parser.add_argument("--resume-latest", action="store_true",

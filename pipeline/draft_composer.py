@@ -32,7 +32,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import pyJianYingDraft as draft
 from pyJianYingDraft import (
@@ -160,6 +160,7 @@ class SentenceInfo:
     """
     text: str        # 已去除尾部标点的干净字幕文本
     audio_path: str  # 该子句独立合成出来的 mp3 路径
+    target_duration_us: int | None = None  # 可选：LLM 给的目标时长（微秒），用于按比例分配
 
 
 @dataclass
@@ -202,6 +203,8 @@ class JianyingDraftBuilder:
         mute_original_video: bool = False,
         crop_video: bool = False,
         preserve_video_duration: bool = False,
+        tts_overshoot: Literal["slow_video", "speed_audio"] = "slow_video",
+        tts_overshoot_max_speed: float = 1.8,
         background_image: str | None = None,
         background_music: str | None = None,
         camera_effects: list | None = None,
@@ -220,6 +223,8 @@ class JianyingDraftBuilder:
         self.mute_original_video = mute_original_video
         self.crop_video = crop_video
         self.preserve_video_duration = preserve_video_duration
+        self.tts_overshoot = tts_overshoot
+        self.tts_overshoot_max_speed = tts_overshoot_max_speed
         self.background_image = background_image
         self.background_music = background_music
         self.camera_effects = camera_effects if camera_effects is not None else CameraEffect.ALL
@@ -387,29 +392,54 @@ class JianyingDraftBuilder:
                 audio_duration = audio_material.duration
 
             # ---- 决定这一段在时间线上的总长 ----
-            # preserve_video_duration 模式：优先保 TTS 讲解完整；视频段用它的原始时长；
-            # 仅当 TTS 比视频段长时，才把该段视频**微微放慢**匹配 TTS，避免把讲解截掉。
+            # preserve_video_duration 模式：视频原速（默认）；TTS 比视频段长时根据
+            # tts_overshoot 策略决定是"慢放视频"还是"加速音频卡进视频段"。
             is_img = is_image_file(seg.media_path)
+            audio_speed: float = 1.0  # 音频加速倍率（仅 speed_audio 策略下 >1）
             if self.preserve_video_duration and not is_img:
                 vm = draft.VideoMaterial(seg.media_path)
                 video_duration = vm.duration
 
                 if audio_duration <= video_duration:
-                    # 常见路径：TTS ≤ 视频段，视频保持原速原时长，音频讲完静音
+                    # TTS ≤ 视频段：视频原速原长，音频讲完静音
                     scene_duration = video_duration
                     speed = 1.0
                 else:
-                    # 兜底：TTS 讲得比视频段还长（narrator 偶尔写多字），
-                    # 把视频放慢到匹配 TTS 时长，讲解完整不被截；成片会略长于原 mp4。
-                    scene_duration = audio_duration
-                    speed = video_duration / audio_duration   # < 1，视频慢放
-                    slowdown_pct = round((1 - speed) * 100, 1)
-                    self._progress(
-                        f"⚠ 片段 {i + 1}: TTS {audio_duration/1_000_000:.2f}s > 视频段 "
-                        f"{video_duration/1_000_000:.2f}s，视频慢放 {slowdown_pct}% 匹配 TTS，"
-                        f"讲解将完整保留",
-                        base_pct,
-                    )
+                    # TTS 讲得比视频段长：根据策略处理
+                    if self.tts_overshoot == "speed_audio":
+                        raw_audio_speed = audio_duration / video_duration  # > 1
+                        if raw_audio_speed <= self.tts_overshoot_max_speed:
+                            # 新行为：视频原速原长，音频统一加速 raw_audio_speed 倍（不变调）卡进段内
+                            scene_duration = video_duration
+                            speed = 1.0
+                            audio_speed = raw_audio_speed
+                            speed_pct = round((audio_speed - 1) * 100, 1)
+                            self._progress(
+                                f"⚡ 片段 {i + 1}: TTS {audio_duration/1_000_000:.2f}s > 视频段 "
+                                f"{video_duration/1_000_000:.2f}s，音频加速 {audio_speed:.2f}x（+{speed_pct}%）不变调卡进视频段",
+                                base_pct,
+                            )
+                        else:
+                            # 加速倍数过大（>1.8x 会太突兀），回退慢放视频
+                            scene_duration = audio_duration
+                            speed = video_duration / audio_duration
+                            slowdown_pct = round((1 - speed) * 100, 1)
+                            self._progress(
+                                f"⚠ 片段 {i + 1}: TTS 需加速 {raw_audio_speed:.2f}x 超上限 "
+                                f"{self.tts_overshoot_max_speed}x，回退视频慢放 {slowdown_pct}%",
+                                base_pct,
+                            )
+                    else:
+                        # 旧行为：慢放视频匹配 TTS
+                        scene_duration = audio_duration
+                        speed = video_duration / audio_duration
+                        slowdown_pct = round((1 - speed) * 100, 1)
+                        self._progress(
+                            f"⚠ 片段 {i + 1}: TTS {audio_duration/1_000_000:.2f}s > 视频段 "
+                            f"{video_duration/1_000_000:.2f}s，视频慢放 {slowdown_pct}% 匹配 TTS，"
+                            f"讲解将完整保留",
+                            base_pct,
+                        )
 
                 video_time_range = trange(current_time, scene_duration)
 
@@ -420,20 +450,47 @@ class JianyingDraftBuilder:
                     vs_kwargs["volume"] = 0.0
                 media_seg = draft.VideoSegment(seg.media_path, video_time_range, **vs_kwargs)
 
-                # 音频入轨：逐句 or 单段
+                # 音频入轨：逐句 or 单段。统一加速时对每段音频传 speed=audio_speed
+                # （pyJianYingDraft AudioSegment 支持 speed 参数，默认 change_pitch=False 不变调）
                 if sentence_materials is not None:
                     sub_offset = current_time
                     for s_info, s_dur in zip(seg.sentences, sentence_durations):
+                        if audio_speed != 1.0:
+                            # 音频 source 取全段 s_dur；target 缩放为 s_dur/audio_speed
+                            scaled_dur = int(round(s_dur / audio_speed))
+                            script.add_segment(
+                                draft.AudioSegment(
+                                    s_info.audio_path,
+                                    trange(sub_offset, scaled_dur),
+                                    source_timerange=trange(0, s_dur),
+                                    speed=audio_speed,
+                                ),
+                                "音频轨道",
+                            )
+                            sub_offset += scaled_dur
+                        else:
+                            script.add_segment(
+                                draft.AudioSegment(s_info.audio_path, trange(sub_offset, s_dur)),
+                                "音频轨道",
+                            )
+                            sub_offset += s_dur
+                else:
+                    if audio_speed != 1.0:
+                        scaled_dur = int(round(audio_duration / audio_speed))
                         script.add_segment(
-                            draft.AudioSegment(s_info.audio_path, trange(sub_offset, s_dur)),
+                            draft.AudioSegment(
+                                seg.audio_path,
+                                trange(current_time, scaled_dur),
+                                source_timerange=trange(0, audio_duration),
+                                speed=audio_speed,
+                            ),
                             "音频轨道",
                         )
-                        sub_offset += s_dur
-                else:
-                    script.add_segment(
-                        draft.AudioSegment(seg.audio_path, trange(current_time, audio_duration)),
-                        "音频轨道",
-                    )
+                    else:
+                        script.add_segment(
+                            draft.AudioSegment(seg.audio_path, trange(current_time, audio_duration)),
+                            "音频轨道",
+                        )
                 add_movement = self.add_video_movement
                 time_range = video_time_range  # 供下游位移/转场计算使用
             else:
@@ -483,14 +540,14 @@ class JianyingDraftBuilder:
 
             if add_movement:
                 effect = self.camera_effects[i % len(self.camera_effects)]
-                effect(media_seg, audio_duration, base_scale=cover_scale)
+                effect(media_seg, scene_duration, base_scale=cover_scale)
             else:
                 # 静止画面也保留一点安全缩放，避免刚好卡在 cover_scale 临界值露边
                 safe_scale = cover_scale * 1.02
                 media_seg.add_keyframe(KeyframeProperty.uniform_scale, 0, safe_scale)
                 for _p in (KeyframeProperty.position_x, KeyframeProperty.position_y):
                     media_seg.add_keyframe(_p, 0, 0)
-                    media_seg.add_keyframe(_p, audio_duration, 0)
+                    media_seg.add_keyframe(_p, scene_duration, 0)
 
             # pyJianYingDraft 的转场要加在“前一个片段”上，才会作用于前后片段之间
             # 为避免库在 add_segment 时复制对象，先给上一段加转场，再写入轨道。
@@ -502,23 +559,30 @@ class JianyingDraftBuilder:
 
             # ---- 字幕入轨 ----
             # 若逐句结构可用：每句用 **该子句真实 audio_duration** 精确对齐；
+            # 当音频统一加速时（audio_speed != 1），字幕时间窗同步缩放。
             # 否则退回按字符比例估算的老逻辑。
             if sentence_materials is not None:
                 sub_offset = current_time
                 for s_info, s_dur in zip(seg.sentences, sentence_durations):
                     txt = s_info.text.strip() or _smart_separators.sub('', s_info.text).strip()
+                    if audio_speed != 1.0:
+                        text_dur = int(round(s_dur / audio_speed))
+                    else:
+                        text_dur = s_dur
                     text_seg = draft.TextSegment(
-                        txt, trange(sub_offset, s_dur), **subtitle_kwargs,
+                        txt, trange(sub_offset, text_dur), **subtitle_kwargs,
                     )
                     script.add_segment(text_seg, "字幕轨道")
-                    sub_offset += s_dur
+                    sub_offset += text_dur
             elif self.split_subtitles:
                 sentences = smart_split(seg.subtitle)
                 total_len = max(len(seg.subtitle), 1)
                 sub_time = current_time
+                # 字幕总时长：加速音频时 = scene_duration，否则 = audio_duration
+                subtitle_total = scene_duration if audio_speed != 1.0 else audio_duration
                 for sentence in sentences:
                     ratio = len(sentence) / total_len
-                    sub_dur = max(int(audio_duration * ratio), 100000)
+                    sub_dur = max(int(subtitle_total * ratio), 100000)
                     txt_clean = _smart_separators.sub('', sentence).strip() or sentence
                     text_seg = draft.TextSegment(
                         txt_clean,

@@ -41,9 +41,12 @@ from pipeline.camera import CAMERA_PRESETS
 
 ROOT = Path(__file__).resolve().parent
 ENV_FILE = ROOT / ".env"
-DEFAULT_OUTPUT_ROOT = ROOT / "outputs" / "projects"
-DEFAULT_LOG_DIR = ROOT / "outputs" / "logs"
-DEFAULT_DRAFT_FOLDER = "D:/Program Files/JianyingPro Drafts"
+# 路径默认值集中在 pipeline.paths；换机器只改 .env 里的 JIANYING_DRAFT_FOLDER / OUTPUTS_ROOT
+from pipeline.paths import (
+    JIANYING_DRAFT_FOLDER as DEFAULT_DRAFT_FOLDER,
+    LOG_DIR as DEFAULT_LOG_DIR,
+    PROJECTS_DIR as DEFAULT_OUTPUT_ROOT,
+)
 
 
 # ============================================================
