@@ -452,17 +452,17 @@ class JianyingDraftBuilder:
 
                 # 音频入轨：逐句 or 单段。统一加速时对每段音频传 speed=audio_speed
                 # （pyJianYingDraft AudioSegment 支持 speed 参数，默认 change_pitch=False 不变调）
+                # 注意：传 speed 时不要同时传 source_timerange，让库按目标时长反向计算 source 范围，
+                # 避免因取整差异导致实际时长 != scaled_dur 引发的重叠。
                 if sentence_materials is not None:
                     sub_offset = current_time
                     for s_info, s_dur in zip(seg.sentences, sentence_durations):
                         if audio_speed != 1.0:
-                            # 音频 source 取全段 s_dur；target 缩放为 s_dur/audio_speed
                             scaled_dur = int(round(s_dur / audio_speed))
                             script.add_segment(
                                 draft.AudioSegment(
                                     s_info.audio_path,
                                     trange(sub_offset, scaled_dur),
-                                    source_timerange=trange(0, s_dur),
                                     speed=audio_speed,
                                 ),
                                 "音频轨道",
@@ -481,7 +481,6 @@ class JianyingDraftBuilder:
                             draft.AudioSegment(
                                 seg.audio_path,
                                 trange(current_time, scaled_dur),
-                                source_timerange=trange(0, audio_duration),
                                 speed=audio_speed,
                             ),
                             "音频轨道",
