@@ -463,7 +463,7 @@ class JianyingDraftBuilder:
                                 draft.AudioSegment(
                                     s_info.audio_path,
                                     trange(sub_offset, scaled_dur),
-                                    speed=audio_speed,
+                                    source_timerange=trange(0, s_dur),
                                 ),
                                 "音频轨道",
                             )
@@ -481,7 +481,7 @@ class JianyingDraftBuilder:
                             draft.AudioSegment(
                                 seg.audio_path,
                                 trange(current_time, scaled_dur),
-                                speed=audio_speed,
+                                source_timerange=trange(0, audio_duration),
                             ),
                             "音频轨道",
                         )
