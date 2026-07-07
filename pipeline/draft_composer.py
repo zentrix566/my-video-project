@@ -450,30 +450,30 @@ class JianyingDraftBuilder:
                     vs_kwargs["volume"] = 0.0
                 media_seg = draft.VideoSegment(seg.media_path, video_time_range, **vs_kwargs)
 
-                # 音频入轨：逐句 or 单段。统一加速时对每段音频传 speed=audio_speed
-                # （pyJianYingDraft AudioSegment 支持 speed 参数，默认 change_pitch=False 不变调）
-                # 注意：传 speed 时不要同时传 source_timerange，让库按目标时长反向计算 source 范围，
-                # 避免因取整差异导致实际时长 != scaled_dur 引发的重叠。
+                # 音频入轨：逐句 or 单段。
+                # 统一加速时，每句的目标时长 = 它在整段 TTS 中的比例 × 场景总时长（video_duration 或 audio_duration），
+                # 避免用 round(s_dur / speed) 累积尾差导致总长 ≠ scene_duration 而被判重叠。
                 if sentence_materials is not None:
+                    # 计算每句在段内的时长比例
+                    total_audio = sum(sentence_durations)  # μs
+                    total_segment_time = max(scene_duration, total_audio)  # μs
                     sub_offset = current_time
-                    for s_info, s_dur in zip(seg.sentences, sentence_durations):
-                        if audio_speed != 1.0:
-                            scaled_dur = int(round(s_dur / audio_speed))
-                            script.add_segment(
-                                draft.AudioSegment(
-                                    s_info.audio_path,
-                                    trange(sub_offset, scaled_dur),
-                                    source_timerange=trange(0, s_dur),
-                                ),
-                                "音频轨道",
-                            )
-                            sub_offset += scaled_dur
+                    for idx, (s_info, s_dur) in enumerate(zip(seg.sentences, sentence_durations)):
+                        if idx < len(seg.sentences) - 1:
+                            ratio = s_dur / max(total_audio, 1)
+                            target_dur = int(round(total_segment_time * ratio))
                         else:
-                            script.add_segment(
-                                draft.AudioSegment(s_info.audio_path, trange(sub_offset, s_dur)),
-                                "音频轨道",
-                            )
-                            sub_offset += s_dur
+                            # 最后一句兜底：从 sub_offset 到 current_time + scene_duration 的剩余
+                            target_dur = max(1, (current_time + scene_duration) - sub_offset)
+                        script.add_segment(
+                            draft.AudioSegment(
+                                s_info.audio_path,
+                                trange(sub_offset, target_dur),
+                                source_timerange=trange(0, s_dur),
+                            ),
+                            "音频轨道",
+                        )
+                        sub_offset += target_dur
                 else:
                     if audio_speed != 1.0:
                         scaled_dur = int(round(audio_duration / audio_speed))
@@ -557,17 +557,18 @@ class JianyingDraftBuilder:
             previous_media_seg = media_seg
 
             # ---- 字幕入轨 ----
-            # 若逐句结构可用：每句用 **该子句真实 audio_duration** 精确对齐；
-            # 当音频统一加速时（audio_speed != 1），字幕时间窗同步缩放。
-            # 否则退回按字符比例估算的老逻辑。
+            # 用比例分配保证总长严格等于 scene_duration，避免 round() 累积尾差导致重叠。
             if sentence_materials is not None:
                 sub_offset = current_time
-                for s_info, s_dur in zip(seg.sentences, sentence_durations):
+                total_audio = sum(sentence_durations)
+                total_seg_us = max(scene_duration, total_audio)
+                for idx, (s_info, s_dur) in enumerate(zip(seg.sentences, sentence_durations)):
                     txt = s_info.text.strip() or _smart_separators.sub('', s_info.text).strip()
-                    if audio_speed != 1.0:
-                        text_dur = int(round(s_dur / audio_speed))
+                    if idx < len(seg.sentences) - 1:
+                        ratio = s_dur / max(total_audio, 1)
+                        text_dur = max(1, int(round(total_seg_us * ratio)))
                     else:
-                        text_dur = s_dur
+                        text_dur = max(1, (current_time + scene_duration) - sub_offset)
                     text_seg = draft.TextSegment(
                         txt, trange(sub_offset, text_dur), **subtitle_kwargs,
                     )
