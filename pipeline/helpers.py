@@ -156,6 +156,111 @@ def _repair_bare_quotes_in_string_values(text: str) -> str:
     return "\n".join(out_lines)
 
 
+def _try_parse_json(text: str) -> dict[str, Any] | None:
+    """尝试 json.loads，失败返 None。"""
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+def _find_longest_valid_json(text: str) -> dict[str, Any] | None:
+    """从文本末尾逐次删除最后一段（按 } 切分），找最长的可解析 JSON 前缀。
+
+    LLM 输出的常见问题是某个对象/数组有语法错误导致整段无法解析。
+    扔掉最后一个不完整的 } 断点即可。
+    """
+    if not text:
+        return None
+    parsed = _try_parse_json(text)
+    if parsed is not None:
+        return parsed
+    # 从末尾逐段往前试：每次找到最后一个 }，切掉它及之后的内容再试
+    import re as _re
+    candidates = set()
+    for m in _re.finditer(r'\}', text):
+        prefix = text[:m.end()]
+        candidates.add(prefix)
+    # 按长度从大到小排序试
+    for prefix in sorted(candidates, key=len, reverse=True):
+        parsed = _try_parse_json(prefix)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _drop_trailing_truncation(text: str) -> str:
+    """LLM 输出可能在尾部被截断（最后一个对象/数组没闭合）。
+    从末尾往前找最后一个 '}'，然后补齐必要的 ]} 让顶层对象闭合。
+    """
+    # 去掉尾部明显不完整的片段：找最后一个 } 位置
+    last_brace = text.rfind("}")
+    if last_brace <= 0:
+        return text
+    head = text[:last_brace + 1]
+    # 补齐未闭合的 [ 和 {
+    opens = [c for c in head if c in "[{"]
+    closes = [c for c in head if c in "]}"]
+    # 简单计算：需要补多少 ] 或 } （顺序不对也没关系，json 会报更接近的错）
+    stack: list[str] = []
+    pair = {"]": "[", "}": "{"}
+    for c in head:
+        if c in "[{":
+            stack.append(c)
+        elif c in "]}":
+            if stack and stack[-1] == pair[c]:
+                stack.pop()
+    closers = {"[": "]", "{": "}"}
+    while stack:
+        head += closers[stack.pop()]
+    return head
+
+
+def _fix_bracket_swap_near_error(text: str) -> str:
+    """一类常见 LLM 错误：对象结尾的 } 写成 ] 或反之。
+    贪心做法：扫字符串做括号配对，遇到失配时尝试把当前最近的开括号对应错配的闭括号换成正确的。
+    只做"单字符替换"级别的修复，避免过度改写。
+    """
+    try:
+        json.loads(text)
+        return text
+    except json.JSONDecodeError:
+        pass
+    # 尝试在每个 ] 和 } 上交换一下看能不能解
+    for i, c in enumerate(text):
+        if c in "]}":
+            swapped = text[:i] + ("}" if c == "]" else "]") + text[i+1:]
+            if _try_parse_json(swapped):
+                return swapped
+    return text
+
+
+def _fix_adjacent_bracket_swap(text: str) -> str:
+    """LLM 有时会写 ']错误的位置}'，即 ] 和 } 相邻时左右颠倒。
+    先尝试扫描所有 "]} ↔ }]" 相邻位置互换后试解析。
+    如果单处交换不够，尝试批量把所有 ]} 换成 }]（LLM 常见重复犯同类错）。
+    """
+    # 逐处尝试
+    for i in range(len(text) - 1):
+        pair = text[i:i+2]
+        if pair == "]}":
+            swapped = text[:i] + "}]" + text[i+2:]
+            if _try_parse_json(swapped):
+                return swapped
+        elif pair == "}]":
+            swapped = text[:i] + "]}" + text[i+2:]
+            if _try_parse_json(swapped):
+                return swapped
+
+    # 批量尝试：左<->右全部互换
+    for a, b in [("]}", "}]"), ("}]", "]}")]:
+        swapped = text.replace(a, b)
+        if swapped != text and _try_parse_json(swapped):
+            return swapped
+
+    return text
+
+
 def extract_json_object(text: str) -> dict[str, Any]:
     """从 LLM 返回中提取 JSON 对象。
 
@@ -163,30 +268,75 @@ def extract_json_object(text: str) -> dict[str, Any]:
       1. 直接 json.loads
       2. 去掉 ```json ... ``` markdown 围栏后再试
       3. 正则匹配首个 {...}
-      4. 修复 JSON 字符串值内部的裸英文双引号后重试
+      4. 修复字符串值内部裸英文双引号
+      5. 修复尾部截断补齐括号
+      6. 尝试修复括号错配（}↔] 单字符替换）
+    全都失败则抛原始 JSONDecodeError。
     """
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```(?:json)?", "", stripped, flags=re.IGNORECASE).strip()
         stripped = re.sub(r"```$", "", stripped).strip()
 
-    # 尝试 1：直接解析
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
+    # 1: 直接
+    parsed = _try_parse_json(stripped)
+    if parsed is not None:
+        return parsed
 
-    # 尝试 2：截取首个大括号包裹的对象
+    # 2: 截 {...}
     match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
     candidate = match.group(0) if match else stripped
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        pass
+    parsed = _try_parse_json(candidate)
+    if parsed is not None:
+        return parsed
 
-    # 尝试 3：修复裸英文引号后再试
+    # 3: 修裸引号
     repaired = _repair_bare_quotes_in_string_values(candidate)
-    return json.loads(repaired)
+    parsed = _try_parse_json(repaired)
+    if parsed is not None:
+        return parsed
+
+    # 4: 补尾部截断
+    fixed_trunc = _drop_trailing_truncation(repaired)
+    parsed = _try_parse_json(fixed_trunc)
+    if parsed is not None:
+        return parsed
+
+    # 5: 常见 LLM JSON 错误迭代修复
+    v = fixed_trunc
+    import re as _re
+    for _ in range(20):
+        parsed = _try_parse_json(v)
+        if parsed is not None:
+            return parsed
+        patched = False
+        # a) "40.0]},{" → "40.0}]},{"  数字后的 ]} 100% 是 }] 错反
+        v_new = _re.sub(r'\d\]\}', lambda m: m.group(0)[:-2] + '}]', v)
+        if v_new != v:
+            v = v_new; patched = True; continue
+        # b) "5.7}}]," → "5.7}],"  数字后的 }} 多了一个
+        v_new = _re.sub(r'(\d)}}', r'\1}', v)
+        if v_new != v:
+            v = v_new; patched = True; continue
+        # c) 通用括号重复清理
+        for old, new in [(']]', ']')]:
+            if old in v:
+                v = v.replace(old, new)
+                patched = True
+                break
+        if not patched:
+            break
+    parsed = _try_parse_json(v)
+    if parsed is not None:
+        return parsed
+
+    # 6: 最后兜底 —— 找最长有效 JSON 前缀（扔掉尾巴坏的部分）
+    parsed = _find_longest_valid_json(candidate)
+    if parsed is not None:
+        return parsed
+
+    # 全失败：抛出原解析错误
+    return json.loads(candidate)
 
 
 def prepare_output_dir(project_name: str, output_root: Path) -> Path:

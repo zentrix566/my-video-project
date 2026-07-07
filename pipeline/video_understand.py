@@ -220,6 +220,48 @@ def caption_frames(
         )
 
         for gi, g in enumerate(groups):
+            # ---- 断点续跑：如果 group 响应已存在且合法，跳过 ----
+            cache_path = output_dir / "responses" / f"video_understand_group{gi:02d}.txt"
+            cached_raw = cache_path.read_text(encoding="utf-8") if cache_path.exists() else ""
+            cached_valid = False
+            if cached_raw.strip():
+                try:
+                    cached_parsed = extract_json_object(cached_raw)
+                    cframes = cached_parsed.get("frames", [])
+                    if len(cframes) == len(g["paths"]):
+                        cached_valid = True
+                        logger.info(
+                            "step:video_understand.group_cache",
+                            group_index=gi, hint="cached, skip",
+                        )
+                except Exception:
+                    pass  # cache 损坏或格式不对，重跑
+
+            if cached_valid:
+                # 复用缓存数据组装 normalized
+                cached_parsed = extract_json_object(cached_raw)
+                cframes = cached_parsed.get("frames", [])
+                group_summary = str(cached_parsed.get("group_summary") or "").strip()
+                for k in range(len(g["paths"])):
+                    global_i = g["start_idx"] + k
+                    item = cframes[k] if k < len(cframes) and isinstance(cframes[k], dict) else {}
+                    normalized.append({
+                        "frame_index": global_i,
+                        "timestamp_s": round(float(frame_timestamps[global_i]), 3),
+                        "caption": str(item.get("caption") or "").strip(),
+                        "key_ui_element": str(item.get("key_ui_element") or "").strip(),
+                        "linked_doc_section": str(item.get("linked_doc_section") or "").strip(),
+                    })
+                groups_meta.append({
+                    "group_index": gi,
+                    "start_idx": g["start_idx"],
+                    "end_idx": g["end_idx"],
+                    "start_s": round(g["timestamps"][0], 3),
+                    "end_s": round(g["timestamps"][-1], 3),
+                    "summary": group_summary,
+                })
+                continue  # 跳过 VLM 调用
+
             prompt = (
                 SYSTEM_PROMPT_GROUP
                 + f"\n\n---\n\n{context_label}:\n" + excerpt

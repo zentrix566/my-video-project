@@ -268,7 +268,31 @@ def generate_doc_scenes(
     )
 
     content = response_json["choices"][0]["message"]["content"]
-    parsed = extract_json_object(content)
+    parsed = None
+    parse_err: str | None = None
+    try:
+        parsed = extract_json_object(content)
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        parse_err = str(exc)[:200]
+        logger.warn("step:doc_narrator.json_parse_failed", error=parse_err)
+
+    if parsed is None:
+        warning = (
+            "[上一轮返回的 JSON 格式不合法。请严格按以下格式输出，"
+            "**绝对不要**在 narration/sentences 内部使用英文引号，"
+            "确保括号 ] 和 } 顺序正确且完全匹配。"
+        )
+        user_payload["json_strict_hint"] = warning
+        logger.info("step:doc_narrator.retry_json")
+        response_json = _call_llm(
+            api_key, base_url, model,
+            SYSTEM_PROMPT_DOC_NARRATOR + "\n\n## 格式警告\n" + warning, user_payload,
+            logger,
+            output_dir / "responses" / "doc_narrator.json",
+            "doc_narrator",
+        )
+        content = response_json["choices"][0]["message"]["content"]
+        parsed = extract_json_object(content)
 
     scenes = parsed.get("scenes")
     if not isinstance(scenes, list) or not scenes:
@@ -349,7 +373,31 @@ def generate_narration_scenes(
     )
 
     content = response_json["choices"][0]["message"]["content"]
-    parsed = extract_json_object(content)
+    parsed = None
+    parse_err: str | None = None
+    try:
+        parsed = extract_json_object(content)
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        parse_err = str(exc)[:200]
+        logger.warn("step:narration_narrator.json_parse_failed", error=parse_err)
+
+    if parsed is None:
+        warning = (
+            "[上一轮返回的 JSON 格式不合法。请严格按以下格式输出，"
+            "**绝对不要**在 narration/sentences 内部使用英文引号，"
+            "确保括号 ] 和 } 顺序正确且完全匹配。"
+        )
+        user_payload["json_strict_hint"] = warning
+        logger.info("step:narration_narrator.retry_json")
+        response_json = _call_llm(
+            api_key, base_url, model,
+            SYSTEM_PROMPT_NARRATION + "\n\n## 格式警告\n" + warning, user_payload,
+            logger,
+            output_dir / "responses" / "narration_narrator.json",
+            "narration_narrator",
+        )
+        content = response_json["choices"][0]["message"]["content"]
+        parsed = extract_json_object(content)
 
     scenes = parsed.get("scenes")
     if not isinstance(scenes, list) or not scenes:
