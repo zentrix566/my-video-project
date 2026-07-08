@@ -49,3 +49,4 @@ PROJECTS_DIR:   Path = OUTPUTS_ROOT / "projects"          # make_video.py
 NARRATION_DIR:  Path = OUTPUTS_ROOT / "narration_videos"  # make_narration_video.py
 DOC_VIDEO_DIR:  Path = OUTPUTS_ROOT / "doc_videos"        # make_doc_video.py
 CODE_WALK_DIR:  Path = OUTPUTS_ROOT / "code_walks"        # make_code_walk.py
+CAROUSEL_DIR:   Path = OUTPUTS_ROOT / "carousels"         # make_carousel_video.py

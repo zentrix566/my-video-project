@@ -10,3 +10,7 @@ Pygments>=2.16
 imageio-ffmpeg>=0.4
 # 文档讲解流水线（make_doc_video.py）新增依赖
 pdfplumber>=0.10
+# Web 后端
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6

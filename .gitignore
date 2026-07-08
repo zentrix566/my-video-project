@@ -45,3 +45,11 @@ desktop.ini
 *.m4v
 *.mp3
 *.wav
+
+# ==== Web 上传文件 ====
+uploads/
+
+# ==== 前端 ====
+web-ui/node_modules/
+web-ui/dist/
+.zcode/

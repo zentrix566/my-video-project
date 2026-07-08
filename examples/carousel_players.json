@@ -1,0 +1,48 @@
+{
+  "_comment": "轮播卡片视频示例：球员评分。image 路径相对于本 JSON 文件所在目录；stars 0~5 支持半星。",
+  "bg_color": "#18181c",
+  "cards": [
+    {
+      "image": "photos/player1.jpg",
+      "title": "拉亚",
+      "subtitle": "JRs评分 248",
+      "stars": 4.0,
+      "comment": "该球员未上场"
+    },
+    {
+      "image": "photos/player2.jpg",
+      "title": "努内斯",
+      "subtitle": "JRs评分 274",
+      "stars": 4.0,
+      "comment": "你为什么不给上"
+    },
+    {
+      "image": "photos/player3.jpg",
+      "title": "拉波尔特",
+      "subtitle": "JRs评分 514",
+      "stars": 3.5,
+      "comment": "像是不想花钱就进场来看球的球迷"
+    },
+    {
+      "image": "photos/player4.jpg",
+      "title": "孔塞桑",
+      "subtitle": "JRs评分 559",
+      "stars": 2.0,
+      "comment": "菜，上你还不如斯"
+    },
+    {
+      "image": "photos/player5.jpg",
+      "title": "球员5",
+      "subtitle": "JRs评分 610",
+      "stars": 2.5,
+      "comment": "这场发挥属实一般"
+    },
+    {
+      "image": "photos/player6.jpg",
+      "title": "球员6",
+      "subtitle": "JRs评分 690",
+      "stars": 4.5,
+      "comment": "mvp！今天就是你了"
+    }
+  ]
+}

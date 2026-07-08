@@ -1,0 +1,76 @@
+:root {
+  --primary-color: #18a058;
+  --bg-color: #f5f7fa;
+  --card-bg: #ffffff;
+  --text-color: #333639;
+  --border-radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg-color);
+  color: var(--text-color);
+}
+
+/* 日志区域样式 */
+.log-terminal {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  padding: 16px;
+  border-radius: 8px;
+  max-height: 500px;
+  overflow-y: auto;
+  line-height: 1.6;
+}
+
+.log-line { white-space: pre-wrap; word-break: break-all; }
+.log-line.info { color: #d4d4d4; }
+.log-line.success { color: #4ec9b0; }
+.log-line.warning { color: #dcdcaa; }
+.log-line.error { color: #f48771; }
+.log-line.debug { color: #808080; }
+
+/* 工作流卡片悬停效果 */
+.workflow-card {
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 2px solid transparent;
+}
+.workflow-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  border-color: var(--primary-color);
+}
+
+.free-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #52c41a, #73d13d);
+  color: white;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  font-weight: 600;
+}
+
+.paid-badge {
+  display: inline-block;
+  background: linear-gradient(135deg, #fa8c16, #ffa940);
+  color: white;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  margin-left: 8px;
+  font-weight: 600;
+}
+
+.page-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+}

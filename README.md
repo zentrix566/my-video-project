@@ -2,21 +2,61 @@
 
 一个人也能又快又好地做短视频。给一个题材，它把 **文案/画面/配音/字幕/装配** 全跑完，产物直接落进本机剪映草稿目录，打开剪映编辑或导出即可。
 
-**支持五条流水线（五选一，各自独立入口）**：
+**支持六条流水线（六选一，各自独立入口）**：
 
 | 场景 | 输入 | 命令 | 单次成本 |
 |---|---|---|---|
 | 🎬 **主题 → 历史/人物介绍片** | 一个主题短语 | `make_video.py --topic "xxx"` | ~1-2 元 |
 | 🖼 **本地图片 → 梗图/图集片** | 一个图片文件夹 | `make_meme_video.py --source "xxx"` | 0 元 |
+| 🎠 **卡片轮播 + BGM 短视频** | 图片目录 或 JSON 数据 | `make_carousel_video.py --source/--data "xxx"` | 0 元 |
 | 💻 **前端项目 → 代码走读片** | 一个 Vue/React 项目路径 | `make_code_walk.py --project "xxx"` | ~0.2 元 |
 | 📄 **PDF+视频 → 需求讲解片** | 一个 PDF + 一个 mp4 | `make_doc_video.py --pdf ... --mp4 ...` | ~0.05-0.35 元 |
 | 🎥 **视频 → 录屏讲解片（AI 配音+字幕）** | 一个 mp4 | `make_narration_video.py --mp4 "xxx"` | ~0.05-0.35 元 |
 
-五种模式共用同一套 **Seed-TTS 配音 + pyJianYingDraft 剪映装配** 底座，产出的草稿在剪映专业版里打开就能进时间线编辑。
+六种模式共用同一套 **Seed-TTS 配音 + pyJianYingDraft 剪映装配** 底座，产出的草稿在剪映专业版里打开就能进时间线编辑。
 
 ---
 
-## 五种模式各自的定位
+## 🚀 快速启动（Web 图形界面）
+
+现在提供 **Vue + FastAPI** 的 Web 图形界面，打开浏览器就能操作，不用记命令行参数！
+
+```bash
+# 安装后端依赖（首次）
+pip install -r requirements.txt
+
+# 安装前端依赖并构建（首次）
+cd web-ui
+npm install
+npm run build
+cd ..
+
+# 一键启动！
+python start_web.py
+```
+
+启动后浏览器会自动打开 http://localhost:8000，界面功能：
+
+- 📋 6 种工作流卡片选择
+- 📝 图形化参数表单，支持文件上传
+- 📊 实时任务进度与终端风格日志
+- 📁 一键打开剪映草稿目录
+- 📜 历史任务列表
+
+开发模式（前端热更新）：
+```bash
+# 终端1：启动后端
+python -m uvicorn web.main:app --reload --port 8000
+
+# 终端2：启动前端开发服务器
+cd web-ui
+npm run dev
+# 访问 http://localhost:5173
+```
+
+---
+
+## 六种模式各自的定位
 
 ### 🎬 主题 → 历史/人物介绍片 (`make_video.py`)
 
@@ -25,6 +65,27 @@
 ### 🖼 本地图片 → 梗图/图集片 (`make_meme_video.py`)
 
 已经有一堆图片（微信保存的、截图、随手拍…），想快速拼成一段视频。零 API 费用，可挂 BGM，可以按序号取图，可以启用「已用清单」跨次运行不抽重。适合抖音/小红书的梗图合集、生活图记、纪念相册。附带 `curate_photos.py` 和 `curate_manual.py` 两个筛图工具。
+
+### 🎠 卡片轮播 + BGM 短视频 (`make_carousel_video.py`)
+
+球员评分、好物推荐、神评截图、图集 BGM 类短视频——画面是一排白底圆角卡片从右向左连续横向滚动，配上一首 BGM。抖音/B 站常见的"轮播图"形式。零 API 费用，两种输入模式：
+
+1. **本地图片模式**（`--source`）：目录里的图片（比如已截好的球员评分图）自动加白底圆角+阴影→拼成横向长图→挂 BGM→从右往左匀速滚动。适合图片本身就带完整 UI（标题/评分/评论都在截图里）的场景。
+2. **数据驱动模式**（`--data`）：写一个 JSON 文件列出每张卡片的图片路径+标题+副标题+星级+评论，Pillow 自动渲染白底圆角卡片（头像区/粗体标题/★星级/灰色副标题/橙色神评），再拼条滚动。适合批量生产结构化内容。
+
+默认横屏 1920×1080（B 站球员评分常见尺寸），可用 `--canvas-w 1080 --canvas-h 1920` 切竖屏。支持 `--fit-to-bgm` 让视频时长等于 BGM 时长。示例 JSON 见 `examples/carousel_players.json`。
+
+```bash
+# 图片目录模式（截图自带UI）：
+python make_carousel_video.py --source "C:/photos/players_screenshots" \
+    --bgm "D:/Music/bgm.mp3" --fit-to-bgm -y
+
+# 数据驱动模式（JSON 描述每张卡片，自动渲染UI）：
+python make_carousel_video.py --data "examples/carousel_players.json" \
+    --bgm "D:/Music/bgm.mp3" --seconds-per-card 3.5 -y
+```
+
+详细命令与参数见文末「轮播卡片模式」章节。
 
 ### 💻 前端项目 → 代码走读片 (`make_code_walk.py`)
 
@@ -83,6 +144,7 @@ python make_video.py --topic "南明李定国"
 my-video-project/
 ├── make_video.py                 # 主入口 CLI（主题 → 视频）
 ├── make_meme_video.py            # 附入口 CLI（本地图 → 梗图剪映草稿）
+├── make_carousel_video.py        # 附入口 CLI（卡片轮播 + BGM 短视频）
 ├── make_code_walk.py             # 附入口 CLI（前端项目 → 代码走读视频）
 ├── make_doc_video.py             # 附入口 CLI（PDF + mp4 → 需求讲解视频）
 ├── make_narration_video.py       # 附入口 CLI（mp4 → AI 配音+字幕讲解视频，无 PDF）
@@ -104,6 +166,8 @@ my-video-project/
 │   ├── narration_narrator.py     # 录屏讲解 Step 2：帧描述 + brief → 讲稿 + 切段时间戳（无 PDF）
 │   ├── video_cut.py              # 文档/录屏讲解 Step 3：ffmpeg 按时间戳切段
 │   ├── meme_composer.py          # 梗图专用装配（无音频轨、模糊背景）
+│   ├── card_renderer.py          # 轮播卡片渲染（PIL 圆角/阴影/星级/评论 + 条带拼接）
+│   ├── carousel_composer.py      # 轮播卡片专用装配（条带滚动 + BGM）
 │   ├── photo_filter.py           # 图片筛选（尺寸/宽高比阈值）
 │   ├── photo_ledger.py           # 已用清单账本（跨次运行不重复挑）
 │   ├── blur_bg.py                # 模糊背景生成器（去黑边，PIL 缓存）
@@ -124,10 +188,12 @@ my-video-project/
 │   ├── code_walks/<slug>/<ts>/   # 代码走读流水线中间产物
 │   ├── doc_videos/<slug>/<ts>/   # 文档讲解流水线中间产物（PDF+mp4）
 │   ├── narration_videos/<slug>/<ts>/ # 录屏讲解流水线中间产物（仅 mp4）
+│   ├── carousels/<ts>/           # 轮播卡片流水线中间产物（拼接好的 strip.png）
 │   └── blur_cache/               # 模糊背景 PIL 缓存（自动重建）
 └── examples/
     ├── run_li_dingguo.sh         # 主流水线样例
-    └── salvage_last_step0.py     # LLM JSON 崩坏时的救援脚本
+    ├── salvage_last_step0.py     # LLM JSON 崩坏时的救援脚本
+    └── carousel_players.json     # 轮播卡片模式 JSON 示例（球员评分）
 ```
 
 剪映草稿输出到 `D:/software/JianyingPro Drafts/`（可通过 `--draft-folder` 覆盖）。
@@ -207,6 +273,21 @@ copy ..\test-agent-plan\.env .env
 
 # 12) 跳过 B 站标题候选（少花 ~0.04 元；默认是开启的）
 .\.venv\Scripts\python make_video.py --topic "南明李定国" --skip-titles
+
+# —— 梗图/图集模式（make_meme_video.py）——
+.\.venv\Scripts\python make_meme_video.py --source "C:/Pictures/2026-06/可用" --range 1-20
+.\.venv\Scripts\python make_meme_video.py --source "..." --bgm "D:/Music/bgm.mp3" --fit-to-bgm -y
+
+# —— 轮播卡片模式（make_carousel_video.py）——
+# 图片目录（截图自带UI，直接滚动）：
+.\.venv\Scripts\python make_carousel_video.py --source "C:/photos/players" \
+    --bgm "D:/Music/bgm.mp3" --fit-to-bgm -y
+# JSON 数据驱动（自动渲染标题/星级/评论到卡片上）：
+.\.venv\Scripts\python make_carousel_video.py --data "examples/carousel_players.json" \
+    --seconds-per-card 3.5 -y
+# 竖屏短视频 + 首张模糊背景：
+.\.venv\Scripts\python make_carousel_video.py --data "cards.json" \
+    --canvas-w 1080 --canvas-h 1920 --cards-visible 2.0 --bg-blur
 ```
 
 ## 交互式确认卡点（默认开启）
