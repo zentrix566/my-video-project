@@ -1,37 +1,156 @@
-"""一键启动 Web 工作台
-后端：FastAPI (http://localhost:8000)
-前端：已经构建到 web-ui/dist/，由后端直接托管
-启动后直接访问 http://localhost:8000 即可使用
+"""🚀 AI 视频生成工作台 - 一键启动脚本
+
+功能：
+1. 自动检查并安装后端Python依赖
+2. 自动安装前端npm依赖（首次）
+3. 自动构建前端（首次或有更新时）
+4. 启动后端服务
+5. 自动打开浏览器
+
+使用：直接双击 start.bat 或运行 python start_web.py
 """
 from __future__ import annotations
 
 import os
 import sys
+import subprocess
 import webbrowser
 import threading
 import time
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent
+WEB_UI_DIR = ROOT / "web-ui"
+DIST_DIR = WEB_UI_DIR / "dist"
+REQUIREMENTS = ROOT / "requirements.txt"
+PACKAGE_JSON = WEB_UI_DIR / "package.json"
+
+# 终端颜色
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+BLUE = "\033[94m"
+RESET = "\033[0m"
+
+
+def print_step(msg: str, color=BLUE):
+    print(f"\n{color}{'='*60}{RESET}")
+    print(f"{color}  {msg}{RESET}")
+    print(f"{color}{'='*60}{RESET}\n")
+
+
+def print_ok(msg: str):
+    print(f"{GREEN}✅ {msg}{RESET}")
+
+
+def print_warn(msg: str):
+    print(f"{YELLOW}⚠️  {msg}{RESET}")
+
+
+def print_err(msg: str):
+    print(f"{RED}❌ {msg}{RESET}")
+
+
+def run(cmd: list[str], cwd: Path = None, check: bool = True):
+    """运行命令，实时输出"""
+    print(f"$ {' '.join(str(c) for c in cmd)}")
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        shell=False,
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(f"命令执行失败 (exit code {result.returncode})")
+    return result
+
+
+def check_python_deps():
+    """检查后端依赖是否安装"""
+    print_step("1/4 检查后端Python依赖")
+    required_packages = ["fastapi", "uvicorn", "pydantic", "PIL", "pyJianYingDraft"]
+    missing = []
+    for pkg in required_packages:
+        try:
+            if pkg == "PIL":
+                import PIL
+            else:
+                __import__(pkg)
+        except ImportError:
+            missing.append(pkg)
+
+    if missing:
+        print_warn(f"缺少依赖包: {', '.join(missing)}")
+        print("正在自动安装依赖...")
+        run([sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS)])
+        print_ok("Python依赖安装完成")
+    else:
+        print_ok("Python依赖已就绪")
+
+
+def check_npm_deps():
+    """检查前端npm依赖是否安装"""
+    print_step("2/4 检查前端依赖")
+    node_modules = WEB_UI_DIR / "node_modules"
+    if not node_modules.exists() or not (node_modules / ".package-lock.json").exists():
+        print_warn("前端依赖未安装，正在执行 npm install ...")
+        run(["npm", "install"], cwd=WEB_UI_DIR)
+        print_ok("前端依赖安装完成")
+    else:
+        print_ok("前端依赖已就绪")
+
+
+def build_frontend():
+    """构建前端（如果dist不存在）"""
+    print_step("3/4 构建前端")
+    index_html = DIST_DIR / "index.html"
+    if index_html.exists():
+        # 检查是否有文件比dist新，需要重新构建
+        need_rebuild = False
+        src_mtime = 0
+        for p in WEB_UI_DIR.rglob("*"):
+            if p.is_file() and "node_modules" not in str(p) and "dist" not in str(p):
+                mtime = p.stat().st_mtime
+                if mtime > src_mtime:
+                    src_mtime = mtime
+        dist_mtime = index_html.stat().st_mtime
+        if src_mtime > dist_mtime:
+            print_warn("检测到前端文件有更新，重新构建...")
+            need_rebuild = True
+        else:
+            print_ok("前端已构建，无需重复构建")
+            return
+    else:
+        need_rebuild = True
+        print_warn("前端未构建，开始构建...")
+
+    if need_rebuild:
+        run(["npm", "run", "build"], cwd=WEB_UI_DIR)
+        print_ok("前端构建完成")
+
+
 def open_browser():
-    """延迟2秒打开浏览器"""
-    time.sleep(2)
+    """延迟打开浏览器"""
+    time.sleep(2.5)
+    print_ok(f"浏览器已打开: http://localhost:8000")
     webbrowser.open("http://localhost:8000")
 
-if __name__ == "__main__":
-    import uvicorn
-    print("=" * 60)
-    print("  🎬 AI 视频生成工作台")
-    print("=" * 60)
-    print(f"  后端 API: http://localhost:8000/api")
-    print(f"  前端界面: http://localhost:8000")
-    print(f"  API文档:  http://localhost:8000/docs")
-    print("=" * 60)
-    print()
-    print("启动中... 浏览器将自动打开，如果没有请手动访问 http://localhost:8000")
-    print()
 
+def start_server():
+    """启动后端服务"""
+    print_step("4/4 启动后端服务")
+    print(f"""
+{GREEN}  🎬 AI 视频生成工作台已启动！{RESET}
+
+  🌐 访问地址: http://localhost:8000
+  📖 API文档:  http://localhost:8000/docs
+  📁 上传目录: {ROOT / 'uploads'}
+
+{YELLOW}  按 Ctrl+C 停止服务{RESET}
+""")
+    # 自动打开浏览器
     threading.Thread(target=open_browser, daemon=True).start()
 
+    import uvicorn
     uvicorn.run(
         "web.main:app",
         host="0.0.0.0",
@@ -39,3 +158,55 @@ if __name__ == "__main__":
         reload=False,
         workers=1,
     )
+
+
+def check_node_npm():
+    """检查node和npm是否安装"""
+    try:
+        subprocess.run(["node", "--version"], capture_output=True, check=True)
+        subprocess.run(["npm", "--version"], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+if __name__ == "__main__":
+    os.chdir(str(ROOT))
+
+    print(f"""
+{GREEN}  ╔══════════════════════════════════════════════╗
+  ║       🎬 AI 视频生成工作台 - 一键启动        ║
+  ╚══════════════════════════════════════════════╝{RESET}
+""")
+
+    # 检查Python版本
+    py_ver = sys.version_info
+    if py_ver < (3, 10):
+        print_warn(f"当前Python版本: {py_ver.major}.{py_ver.minor}，推荐使用 3.10+")
+
+    # 检查Node.js
+    if not check_node_npm():
+        print_err("未检测到 Node.js 和 npm！")
+        print("""
+前端构建需要 Node.js，请先安装:
+  1. 访问 https://nodejs.org/ 下载 LTS 版本安装
+  2. 安装完成后重新运行本脚本
+
+（如果你已经构建过前端，可以直接运行: python -m uvicorn web.main:app --port 8000）
+""")
+        sys.exit(1)
+    print_ok("Node.js/npm 已安装")
+
+    try:
+        check_python_deps()
+        check_npm_deps()
+        build_frontend()
+        start_server()
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}服务已停止{RESET}")
+    except Exception as e:
+        print_err(f"启动失败: {e}")
+        import traceback
+        traceback.print_exc()
+        input("\n按回车键退出...")
+        sys.exit(1)
