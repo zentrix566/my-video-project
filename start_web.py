@@ -161,17 +161,36 @@ def start_server():
 
 
 def check_node_npm():
-    """检查node和npm是否安装"""
+    """检查node和npm是否安装（Windows下兼容PowerShell/cmd）"""
+    # 先检查常见安装路径
+    common_paths = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "nodejs",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
+    ]
+    for p in common_paths:
+        if (p / "node.exe").exists():
+            os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
+            break
+
+    # 在Windows上也尝试用where查找
     try:
-        subprocess.run(["node", "--version"], capture_output=True, check=True)
-        subprocess.run(["npm", "--version"], capture_output=True, check=True)
+        result = subprocess.run(["where", "node"], capture_output=True, text=True, shell=True)
+        if result.returncode != 0 or not result.stdout.strip():
+            result = subprocess.run(["node", "--version"], capture_output=True, shell=True)
+            if result.returncode != 0:
+                return False
+        subprocess.run(["npm", "--version"], capture_output=True, shell=True, check=True)
         return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except Exception:
         return False
 
 
 if __name__ == "__main__":
     os.chdir(str(ROOT))
+
+    # 解析命令行参数
+    skip_build = "--skip-build" in sys.argv or "--fast" in sys.argv
+    no_browser = "--no-browser" in sys.argv
 
     print(f"""
 {GREEN}  ╔══════════════════════════════════════════════╗
@@ -184,23 +203,38 @@ if __name__ == "__main__":
     if py_ver < (3, 10):
         print_warn(f"当前Python版本: {py_ver.major}.{py_ver.minor}，推荐使用 3.10+")
 
-    # 检查Node.js
-    if not check_node_npm():
-        print_err("未检测到 Node.js 和 npm！")
-        print("""
-前端构建需要 Node.js，请先安装:
-  1. 访问 https://nodejs.org/ 下载 LTS 版本安装
-  2. 安装完成后重新运行本脚本
+    has_node = check_node_npm()
+    dist_exists = (DIST_DIR / "index.html").exists()
 
-（如果你已经构建过前端，可以直接运行: python -m uvicorn web.main:app --port 8000）
+    if skip_build:
+        print_warn("使用 --skip-build 参数，跳过依赖检查和前端构建，直接启动")
+    else:
+        if not has_node and not dist_exists:
+            print_err("未检测到 Node.js 和 npm，且前端未构建！")
+            print("""
+两种解决方案:
+1. 安装 Node.js: 访问 https://nodejs.org/ 下载 LTS 版本安装后重新运行
+2. 如果已经在其他地方构建过前端，直接运行: python start_web.py --skip-build
 """)
-        sys.exit(1)
-    print_ok("Node.js/npm 已安装")
+            sys.exit(1)
+        if not has_node and dist_exists:
+            print_warn("未检测到Node.js，但前端已构建，直接启动服务")
+        else:
+            print_ok("Node.js/npm 已安装")
+
+        try:
+            check_python_deps()
+            if has_node:
+                check_npm_deps()
+                build_frontend()
+        except Exception as e:
+            print_err(f"依赖检查/构建失败: {e}")
+            if dist_exists:
+                print_warn("尝试使用已有构建启动...")
+            else:
+                raise
 
     try:
-        check_python_deps()
-        check_npm_deps()
-        build_frontend()
         start_server()
     except KeyboardInterrupt:
         print(f"\n{YELLOW}服务已停止{RESET}")
