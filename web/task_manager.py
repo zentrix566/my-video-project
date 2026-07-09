@@ -1,7 +1,8 @@
-"""后台任务管理器：线程池执行 + 状态追踪 + 日志收集"""
+"""后台任务管理器：线程池执行 + 状态追踪 + 日志收集 + 历史持久化"""
 from __future__ import annotations
 
 import io
+import json
 import logging
 import sys
 import threading
@@ -15,6 +16,10 @@ from typing import Any, Callable, Optional
 from .schemas import (
     LogEntry, TaskInfo, TaskStatus, WorkflowType, WORKFLOW_LABELS,
 )
+
+# 任务历史持久化文件
+HISTORY_FILE = Path(__file__).resolve().parent.parent / "outputs" / "task_history.json"
+HISTORY_FILE.parent.mkdir(exist_ok=True)
 
 
 class ThreadSafeList:
@@ -139,6 +144,44 @@ class TaskContext:
             confirm_data=self.confirm_data,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """序列化为字典（用于持久化，不包含日志和线程同步原语）"""
+        return {
+            "task_id": self.task_id,
+            "name": self.name,
+            "workflow": self.workflow.value,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "params": self.params,
+            "draft_path": self.draft_path,
+            "output_dir": self.output_dir,
+            "error": self.error,
+            "progress": self.progress,
+            "current_step": self.current_step,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TaskContext":
+        """从持久化字典恢复（已完成的历史任务，不含日志）"""
+        ctx = cls(
+            task_id=data["task_id"],
+            name=data["name"],
+            workflow=WorkflowType(data["workflow"]),
+            params=data.get("params", {}),
+        )
+        ctx.status = TaskStatus(data["status"])
+        ctx.created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+        ctx.started_at = datetime.fromisoformat(data["started_at"]) if data.get("started_at") else None
+        ctx.finished_at = datetime.fromisoformat(data["finished_at"]) if data.get("finished_at") else None
+        ctx.draft_path = data.get("draft_path")
+        ctx.output_dir = data.get("output_dir")
+        ctx.error = data.get("error")
+        ctx.progress = data.get("progress", 100 if ctx.status == TaskStatus.SUCCESS else 0)
+        ctx.current_step = data.get("current_step")
+        return ctx
+
 
 class TaskManager:
     """全局任务管理器"""
@@ -147,6 +190,37 @@ class TaskManager:
         self._tasks: dict[str, TaskContext] = {}
         self._lock = threading.Lock()
         self._workflow_handlers: dict[WorkflowType, Callable[[TaskContext], None]] = {}
+        # 启动时加载历史任务
+        self._load_history()
+
+    def _save_history(self):
+        """把所有已完成/失败/取消的任务持久化到文件"""
+        try:
+            with self._lock:
+                history = []
+                for ctx in self._tasks.values():
+                    # 只持久化已结束的任务，运行中的不保存（避免不完整状态）
+                    if ctx.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED):
+                        history.append(ctx.to_dict())
+                # 按创建时间倒序，最多保留100条
+                history.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+                history = history[:100]
+            HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logging.warning(f"保存任务历史失败: {e}")
+
+    def _load_history(self):
+        """启动时从文件加载历史任务"""
+        if not HISTORY_FILE.exists():
+            return
+        try:
+            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            with self._lock:
+                for item in data:
+                    ctx = TaskContext.from_dict(item)
+                    self._tasks[ctx.task_id] = ctx
+        except Exception as e:
+            logging.warning(f"加载任务历史失败: {e}")
 
     def register_workflow(self, wf_type: WorkflowType, handler: Callable[[TaskContext], None]):
         self._workflow_handlers[wf_type] = handler
@@ -202,6 +276,8 @@ class TaskManager:
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
                 ctx.finished_at = datetime.now()
+                # 任务结束后自动持久化
+                self._save_history()
 
         return self._executor.submit(_run)
 
