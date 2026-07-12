@@ -392,7 +392,7 @@ const defaultParams = {
   // meme
   source: '',
   bgm: '',
-  fit_to_bgm: true,
+  fit_to_bgm: false,
   sort: 'name',
   canvas_w: 1080,
   canvas_h: 1080,
