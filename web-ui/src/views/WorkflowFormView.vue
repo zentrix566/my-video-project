@@ -51,19 +51,35 @@
           <n-tabs v-model:value="memeInputMode" type="line" style="margin-bottom: 16px;">
             <n-tab-pane name="upload" tab="📤 上传图片">
               <n-form-item label="选择图片">
-                <n-upload
-                  :custom-request="handleUploadImages"
-                  :file-list="uploadedImageList"
-                  accept="image/*"
-                  multiple
-                  list-type="image-card"
-                  @remove="handleRemoveImage"
-                >
-                  点击或拖拽上传图片
-                </n-upload>
+                <n-space :size="8" style="margin-bottom: 12px;">
+                  <n-upload
+                    :custom-request="handleUploadImages"
+                    :file-list="uploadedImageList"
+                    accept="image/*"
+                    multiple
+                    list-type="image-card"
+                    @remove="handleRemoveImage"
+                  >
+                    点击选择图片
+                  </n-upload>
+                </n-space>
+                <n-space :size="8">
+                  <label class="folder-upload-btn">
+                    <input type="file" webkitdirectory directory multiple accept="image/*" @change="handleFolderUpload" style="display:none;" />
+                    <n-button tag="span">📁 选择整个文件夹</n-button>
+                  </label>
+                  <n-text depth="3" style="font-size: 12px; align-self: center;">选择文件夹后自动上传该目录下所有图片</n-text>
+                </n-space>
+                <div v-if="uploadingFolder" style="margin-top: 8px;">
+                  <n-progress type="percent" :percentage="folderUploadProgress" :show-indicator="true" />
+                  <n-text depth="3" style="font-size: 12px;">正在上传文件夹中图片... {{ folderUploadedCount }}/{{ folderTotalCount }}</n-text>
+                </div>
               </n-form-item>
             </n-tab-pane>
             <n-tab-pane name="local" tab="📁 本地目录">
+              <n-alert type="info" style="margin-bottom: 12px;">
+                直接读取服务器本地文件夹中的图片，无需上传。适合服务端已有大量图片的场景。
+              </n-alert>
               <n-form-item label="图片目录路径">
                 <n-input v-model:value="params.source" placeholder="本地图片文件夹完整路径，例如 C:/photos/memes" />
               </n-form-item>
@@ -123,16 +139,29 @@
           <n-tabs v-model:value="carouselMode" type="line" style="margin-bottom: 16px;">
             <n-tab-pane name="upload" tab="📤 上传卡片图片">
               <n-form-item label="选择卡片图片">
-                <n-upload
-                  :custom-request="handleUploadImages"
-                  :file-list="uploadedImageList"
-                  accept="image/*"
-                  multiple
-                  list-type="image-card"
-                  @remove="handleRemoveImage"
-                >
-                  点击或拖拽上传卡片截图
-                </n-upload>
+                <n-space :size="8" style="margin-bottom: 12px;">
+                  <n-upload
+                    :custom-request="handleUploadImages"
+                    :file-list="uploadedImageList"
+                    accept="image/*"
+                    multiple
+                    list-type="image-card"
+                    @remove="handleRemoveImage"
+                  >
+                    点击选择图片
+                  </n-upload>
+                </n-space>
+                <n-space :size="8">
+                  <label class="folder-upload-btn">
+                    <input type="file" webkitdirectory directory multiple accept="image/*" @change="handleFolderUpload" style="display:none;" />
+                    <n-button tag="span">📁 选择整个文件夹</n-button>
+                  </label>
+                  <n-text depth="3" style="font-size: 12px; align-self: center;">选择文件夹后自动上传所有卡片图片</n-text>
+                </n-space>
+                <div v-if="uploadingFolder" style="margin-top: 8px;">
+                  <n-progress type="percent" :percentage="folderUploadProgress" :show-indicator="true" />
+                  <n-text depth="3" style="font-size: 12px;">正在上传... {{ folderUploadedCount }}/{{ folderTotalCount }}</n-text>
+                </div>
               </n-form-item>
             </n-tab-pane>
             <n-tab-pane name="local" tab="📁 本地图片目录">
@@ -346,6 +375,10 @@ const memeInputMode = ref('upload')
 const cardsJsonText = ref('')
 const uploadedImageList = ref([])
 const uploadedImagePaths = ref([])
+const uploadingFolder = ref(false)
+const folderUploadProgress = ref(0)
+const folderUploadedCount = ref(0)
+const folderTotalCount = ref(0)
 
 // 默认参数
 const defaultParams = {
@@ -411,20 +444,92 @@ onMounted(async () => {
 // 上传多张图片
 const handleUploadImages = async ({ file, onProgress, onFinish, onError }) => {
   try {
+    // 先用本地Blob URL预览，不需要等待上传完成
+    const localUrl = URL.createObjectURL(file.file)
+    const tempItem = {
+      id: 'uploading_' + Date.now(),
+      name: file.name,
+      url: localUrl,
+      status: 'uploading'
+    }
+    uploadedImageList.value.push(tempItem)
+
     const result = await api.uploadFile(file.file, onProgress)
     uploadedImagePaths.value.push(result.path)
-    uploadedImageList.value.push({
-      id: result.file_id,
-      name: result.filename,
-      url: `file://${result.path}`,
-      status: 'finished'
-    })
+
+    // 更新状态为完成
+    const idx = uploadedImageList.value.findIndex(f => f.id === tempItem.id)
+    if (idx !== -1) {
+      uploadedImageList.value[idx] = {
+        id: result.file_id,
+        name: result.filename,
+        url: localUrl, // 继续使用本地Blob URL预览，更快更可靠
+        status: 'finished'
+      }
+    }
     message.success(`上传成功: ${result.filename}`)
     onFinish()
   } catch (e) {
+    // 移除失败项
+    uploadedImageList.value = uploadedImageList.value.filter(f => f.id !== 'uploading_' + Date.now())
     message.error(`上传失败: ${e.message}`)
     onError()
   }
+}
+
+// 文件夹批量上传
+const handleFolderUpload = async (e) => {
+  const files = Array.from(e.target.files || [])
+  // 只筛选图片文件
+  const imageFiles = files.filter(f => f.type.startsWith('image/'))
+  if (imageFiles.length === 0) {
+    message.warning('所选文件夹中没有图片文件')
+    e.target.value = ''
+    return
+  }
+
+  uploadingFolder.value = true
+  folderTotalCount.value = imageFiles.length
+  folderUploadedCount.value = 0
+  folderUploadProgress.value = 0
+
+  for (let i = 0; i < imageFiles.length; i++) {
+    const file = imageFiles[i]
+    try {
+      // 本地预览
+      const localUrl = URL.createObjectURL(file)
+      const tempId = 'folder_' + Date.now() + '_' + i
+      uploadedImageList.value.push({
+        id: tempId,
+        name: file.webkitRelativePath || file.name,
+        url: localUrl,
+        status: 'uploading'
+      })
+
+      const result = await api.uploadFile(file)
+      uploadedImagePaths.value.push(result.path)
+
+      // 更新为完成状态
+      const idx = uploadedImageList.value.findIndex(f => f.id === tempId)
+      if (idx !== -1) {
+        uploadedImageList.value[idx] = {
+          id: result.file_id,
+          name: file.webkitRelativePath || result.filename,
+          url: localUrl,
+          status: 'finished'
+        }
+      }
+
+      folderUploadedCount.value = i + 1
+      folderUploadProgress.value = Math.round(((i + 1) / imageFiles.length) * 100)
+    } catch (err) {
+      console.error(`上传失败 ${file.name}:`, err)
+    }
+  }
+
+  message.success(`文件夹上传完成，成功 ${folderUploadedCount.value}/${imageFiles.length} 张图片`)
+  uploadingFolder.value = false
+  e.target.value = '' // 重置input，允许再次选择同一文件夹
 }
 
 const handleRemoveImage = ({ id }) => {
@@ -532,3 +637,10 @@ const submitForm = async () => {
   }
 }
 </script>
+
+<style scoped>
+.folder-upload-btn {
+  cursor: pointer;
+  display: inline-block;
+}
+</style>

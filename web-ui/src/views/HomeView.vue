@@ -32,6 +32,38 @@
       </n-gi>
     </n-grid>
 
+    <!-- 图片工具区 -->
+    <div style="margin-top: 48px;">
+      <h2 style="font-size: 22px; margin: 0 0 16px; display: flex; align-items: center; gap: 8px;">
+        🛠️ 图片工具
+      </h2>
+      <n-grid :cols="3" :x-gap="20" :y-gap="20">
+        <n-gi v-for="tool in tools" :key="tool.path" class="workflow-card-wrapper">
+          <n-card class="workflow-card" @click="router.push(tool.path)" hoverable>
+            <div style="padding: 8px 0;">
+              <div style="display: flex; align-items: center; margin-bottom: 12px;">
+                <n-icon size="32" :color="tool.color" style="margin-right: 12px;">
+                  <component :is="tool.icon" />
+                </n-icon>
+                <div>
+                  <h3 style="margin: 0; font-size: 18px;">
+                    {{ tool.label }}
+                    <span class="free-badge">零费用</span>
+                  </h3>
+                </div>
+              </div>
+              <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 0; min-height: 44px;">
+                {{ tool.description }}
+              </p>
+              <div style="margin-top: 16px; display: flex; flex-wrap: wrap; gap: 6px;">
+                <n-tag v-for="tag in tool.tags" :key="tag" size="small" :bordered="false" type="success">{{ tag }}</n-tag>
+              </div>
+            </div>
+          </n-card>
+        </n-gi>
+      </n-grid>
+    </div>
+
     <div style="margin-top: 48px; padding: 24px; background: #fff; border-radius: 12px;">
       <n-alert type="info" title="使用说明" :show-icon="false">
         <ol style="margin: 8px 0 0; padding-left: 20px; line-height: 2;">
@@ -71,6 +103,9 @@ const IconDoc = () => h('svg', { viewBox: '0 0 24 24', fill: 'currentColor' }, [
 ])
 const IconMic = () => h('svg', { viewBox: '0 0 24 24', fill: 'currentColor' }, [
   h('path', { d: 'M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z' })
+])
+const IconEraser = () => h('svg', { viewBox: '0 0 24 24', fill: 'currentColor' }, [
+  h('path', { d: 'M16.24 3.56l4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a2.004 2.004 0 01-2.83 0L4.22 15.6c-.78-.79-.78-2.05 0-2.84l9.18-9.19c.78-.79 2.05-.79 2.84-.01zm-2.12 4.08L6.83 14.93l2.83 2.83 7.29-7.29-2.83-2.83z' })
 ])
 
 const workflows = [
@@ -127,6 +162,17 @@ const workflows = [
     color: '#0891b2',
     icon: IconMic,
     tags: ['视觉大模型', '智能切段', 'TTS配音', '字幕']
+  }
+]
+
+const tools = [
+  {
+    path: '/tools/watermark',
+    label: '图片去水印',
+    description: '上传图片框选水印区域，一键智能去除文字/Logo水印',
+    color: '#e85d75',
+    icon: IconEraser,
+    tags: ['本地处理', 'OpenCV', '即时出图']
   }
 ]
 

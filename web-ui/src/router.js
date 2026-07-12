@@ -22,6 +22,11 @@ const routes = [
     name: 'TaskDetail',
     component: () => import('./views/TaskDetailView.vue'),
     props: true
+  },
+  {
+    path: '/tools/watermark',
+    name: 'Watermark',
+    component: () => import('./views/WatermarkView.vue')
   }
 ]
 

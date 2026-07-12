@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+import shutil
 import subprocess
 import webbrowser
 import threading
@@ -54,10 +55,13 @@ def print_err(msg: str):
 def run(cmd: list[str], cwd: Path = None, check: bool = True):
     """运行命令，实时输出"""
     print(f"$ {' '.join(str(c) for c in cmd)}")
+    # Windows: shell=False 无法直接运行 .cmd/.bat 脚本（如 npm, npx），需要 shell=True
+    # 因为 npm 实际上是 npm.cmd 批处理文件，CreateProcess 不会自动解析 .cmd 扩展名
+    use_shell = sys.platform == "win32"
     result = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
-        shell=False,
+        shell=use_shell,
     )
     if check and result.returncode != 0:
         raise RuntimeError(f"命令执行失败 (exit code {result.returncode})")
@@ -67,24 +71,47 @@ def run(cmd: list[str], cwd: Path = None, check: bool = True):
 def check_python_deps():
     """检查后端依赖是否安装"""
     print_step("1/4 检查后端Python依赖")
-    required_packages = ["fastapi", "uvicorn", "pydantic", "PIL", "pyJianYingDraft"]
+    required_packages = ["fastapi", "uvicorn", "pydantic", "PIL", "pyJianYingDraft", "cv2", "numpy"]
     missing = []
     for pkg in required_packages:
         try:
             if pkg == "PIL":
                 import PIL
+            elif pkg == "cv2":
+                import cv2
             else:
                 __import__(pkg)
         except ImportError:
             missing.append(pkg)
 
     if missing:
-        print_warn(f"缺少依赖包: {', '.join(missing)}")
+        print_warn(f"缺少核心依赖包: {', '.join(missing)}")
         print("正在自动安装依赖...")
         run([sys.executable, "-m", "pip", "install", "-r", str(REQUIREMENTS)])
-        print_ok("Python依赖安装完成")
+        print_ok("Python核心依赖安装完成")
     else:
-        print_ok("Python依赖已就绪")
+        print_ok("Python核心依赖已就绪")
+
+    # 检查云端AI去水印配置
+    env_file = ROOT / ".env"
+    has_cloud_ak = False
+    has_cloud_sk = False
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("VOLC_ACCESS_KEY="):
+                val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                if val and not val.startswith("your_"):
+                    has_cloud_ak = True
+            if stripped.startswith("VOLC_SECRET_KEY="):
+                val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                if val and not val.startswith("your_"):
+                    has_cloud_sk = True
+    if has_cloud_ak and has_cloud_sk:
+        print_ok("云端AI去水印已配置")
+    else:
+        print_warn("云端AI去水印(火山引擎)未配置，传统算法可直接使用")
+        print("  如需更好的去水印效果，在.env中配置VOLC_ACCESS_KEY和VOLC_SECRET_KEY即可启用AI云端模式")
 
 
 def check_npm_deps():
@@ -162,24 +189,39 @@ def start_server():
 
 def check_node_npm():
     """检查node和npm是否安装（Windows下兼容PowerShell/cmd）"""
-    # 先检查常见安装路径
-    common_paths = [
-        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "nodejs",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "nodejs",
-    ]
-    for p in common_paths:
-        if (p / "node.exe").exists():
-            os.environ["PATH"] = str(p) + os.pathsep + os.environ.get("PATH", "")
-            break
-
-    # 在Windows上也尝试用where查找
+    # 先在常见安装路径查找（包括不同盘符）
+    program_files = os.environ.get("ProgramFiles", "C:/Program Files")
+    # 尝试所有可能的盘符号
+    possible_roots = [program_files]
+    for drive in "CDEFGH":
+        possible_roots.append(f"{drive}:/Program Files")
+        possible_roots.append(f"{drive}:/Program Files (x86)")
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if local_appdata:
+        possible_roots.append(str(Path(local_appdata) / "Programs"))
+    
+    # 收集所有可能的 nodejs 路径
+    search_dirs = set()
+    for root in possible_roots:
+        node_dir = Path(root) / "nodejs"
+        if node_dir.exists() and (node_dir / "node.exe").exists():
+            search_dirs.add(str(node_dir))
+    
+    # 把找到的路径加到 PATH 前面
+    if search_dirs:
+        os.environ["PATH"] = os.pathsep.join(search_dirs) + os.pathsep + os.environ.get("PATH", "")
+    
+    # 使用 shutil.which 查找，它能正确处理 Windows PATHEXT (.cmd, .exe 等)
+    node_path = shutil.which("node")
+    npm_path = shutil.which("npm")
+    
+    if not node_path or not npm_path:
+        return False
+    
+    # 验证能正常运行
     try:
-        result = subprocess.run(["where", "node"], capture_output=True, text=True, shell=True)
-        if result.returncode != 0 or not result.stdout.strip():
-            result = subprocess.run(["node", "--version"], capture_output=True, shell=True)
-            if result.returncode != 0:
-                return False
-        subprocess.run(["npm", "--version"], capture_output=True, shell=True, check=True)
+        subprocess.run([node_path, "--version"], capture_output=True, check=True)
+        subprocess.run([npm_path, "--version"], capture_output=True, check=True, shell=sys.platform == "win32")
         return True
     except Exception:
         return False

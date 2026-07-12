@@ -66,5 +66,33 @@ export const api = {
     })
   },
 
-  listFiles: () => request('/files')
+  listFiles: () => request('/files'),
+
+  // 图片工具 - 去水印配置
+  getWatermarkConfig: () => request('/tools/watermark/config'),
+
+  // 图片工具 - 去水印
+  async removeWatermark(file, regions, method = 'telea', radius = 5, padding = 3) {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('regions', JSON.stringify(regions))
+    formData.append('method', method)
+    formData.append('radius', String(radius))
+    formData.append('padding', String(padding))
+
+    const res = await fetch(BASE + '/tools/remove-watermark', {
+      method: 'POST',
+      body: formData
+    })
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`
+      try {
+        const err = await res.json()
+        msg = err.detail || JSON.stringify(err)
+      } catch (e) {}
+      throw new Error(msg)
+    }
+    const blob = await res.blob()
+    return URL.createObjectURL(blob)
+  }
 }

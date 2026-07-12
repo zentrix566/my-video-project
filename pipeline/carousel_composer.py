@@ -23,7 +23,7 @@ from typing import Callable
 
 import pyJianYingDraft as draft
 from pyJianYingDraft import (
-    ClipSettings, KeyframeProperty, TrackType, trange,
+    ClipSettings, KeyframeProperty, TrackType, TrackSpec, trange,
 )
 from PIL import Image
 
@@ -226,12 +226,12 @@ def compose_carousel_draft(
     df = draft.DraftFolder(draft_folder_path)
     script = df.create_draft(draft_name, canvas_w, canvas_h, allow_replace=True)
 
-    script.add_track(TrackType.video, "bg_track")
-    # strip_track 是主视频轨，在它上面挂 BGM 音频子轨（对齐现有项目的模式）
+    script.append_track(draft.TrackSpec(TrackType.video, "bg_track"))
+    # strip_track 是主视频轨，BGM音频轨单独添加
     strip_track_name = "strip_track"
-    strip_tb = script.add_track(TrackType.video, strip_track_name)
+    script.append_track(draft.TrackSpec(TrackType.video, strip_track_name))
     if bgm_path:
-        strip_tb.add_track(TrackType.audio, "bgm_track")
+        script.append_track(draft.TrackSpec(TrackType.audio, "bgm_track"))
     prog("tracks created", 50)
 
     # ---- 7. 计算滚动参数 ----
