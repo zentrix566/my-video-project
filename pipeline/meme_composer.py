@@ -18,7 +18,7 @@ from typing import Callable
 
 import pyJianYingDraft as draft
 from pyJianYingDraft import (
-    ClipSettings, KeyframeProperty, TrackType, TrackSpec, TransitionType, trange,
+    ClipSettings, KeyframeProperty, TrackType, TransitionType, trange,
 )
 from PIL import Image
 
@@ -115,10 +115,10 @@ def compose_meme_draft(
 
     # Track layering: bg_track added FIRST (lowest layer), main_track ON TOP
     if use_blur_bg:
-        script.append_track(draft.TrackSpec(TrackType.video, "bg_track"))
-    script.append_track(draft.TrackSpec(TrackType.video, "main_track"))
+        script.add_track(TrackType.video, "bg_track")
+    script.add_track(TrackType.video, "main_track")
     if bgm_path:
-        script.append_track(draft.TrackSpec(TrackType.audio, "bgm_track"))
+        script.add_track(TrackType.audio, "bgm_track")
     prog("tracks created", 6)
 
     total = len(image_paths)

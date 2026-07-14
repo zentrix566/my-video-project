@@ -36,7 +36,7 @@ from typing import Callable, Literal
 
 import pyJianYingDraft as draft
 from pyJianYingDraft import (
-    TrackType, TrackSpec, TextStyle, ClipSettings, TextBackground,
+    TrackType, TextStyle, ClipSettings, TextBackground,
     KeyframeProperty, trange, TransitionType,
 )
 from PIL import Image
@@ -357,13 +357,13 @@ class JianyingDraftBuilder:
         script = df.create_draft(self.draft_name, width, height, allow_replace=True)
 
         # 轨道
-        script.append_track(TrackSpec(TrackType.video, "媒体轨道"))
-        script.append_track(TrackSpec(TrackType.audio, "音频轨道"))
-        script.append_track(TrackSpec(TrackType.text, "字幕轨道"))
+        script.add_track(TrackType.video, "媒体轨道")
+        script.add_track(TrackType.audio, "音频轨道")
+        script.add_track(TrackType.text, "字幕轨道")
         if self.background_image:
-            script.append_track(TrackSpec(TrackType.video, "背景图片轨道"))
+            script.add_track(TrackType.video, "背景图片轨道")
         if self.background_music:
-            script.append_track(TrackSpec(TrackType.audio, "背景音乐轨道"))
+            script.add_track(TrackType.audio, "背景音乐轨道")
         self._progress("轨道创建完毕", 15)
 
         total_segments = len(segments)
@@ -698,10 +698,10 @@ class JianyingDraftBuilder:
         script = df.create_draft(self.draft_name, width, height, allow_replace=True)
 
         # --- 建轨道 ---
-        script.append_track(TrackSpec(TrackType.video, "媒体轨道"))
-        script.append_track(TrackSpec(TrackType.audio, "音频轨道"))
-        script.append_track(TrackSpec(TrackType.text, "标题轨道"))
-        script.append_track(TrackSpec(TrackType.text, "字幕轨道"))
+        script.add_track(TrackType.video, "媒体轨道")
+        script.add_track(TrackType.audio, "音频轨道")
+        script.add_track(TrackType.text, "标题轨道")
+        script.add_track(TrackType.text, "字幕轨道")
         self._progress("轨道创建完毕", 10)
 
         # ============================================================
